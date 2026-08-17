@@ -1,0 +1,46 @@
+# Keil/uVision generated files
+**/Objects/
+**/Listings/
+**/DebugConfig/
+*.uvguix.*
+*.uvgui.*
+*.dep
+*.crf
+*.lnp
+*.lst
+
+# Firmware and linker build outputs
+*.axf
+*.elf
+*.hex
+*.bin
+*.xbin
+*.map
+*.build_log.htm
+
+# GCC/CMake and .NET build directories
+**/build/
+**/build-*/
+**/out/
+**/bin/
+**/obj/
+
+# Python tooling
+.venv/
+__pycache__/
+.pytest_cache/
+*.py[cod]
+
+# Local logs, backups, and editor/OS state
+*.log
+*.bak
+*.tmp
+.device-backups/
+.vs/
+Thumbs.db
+.DS_Store
+*@SynoEAStream
+
+# Local reference/install archives outside the three maintained projects
+/天气时钟配套资料/
+/Boot2026(1).tar.bz2

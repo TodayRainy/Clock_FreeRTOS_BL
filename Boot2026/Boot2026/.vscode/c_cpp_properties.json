@@ -1,0 +1,36 @@
+{
+    "configurations": [
+        {
+            "name": "boot",
+            "includePath": [
+                "app",
+                "components/crc",
+                "components/easylogger",
+                "components/ringbuffer",
+                "components/freertos/include",
+                "components/freertos/portable/GCC/ARM_CM4F",
+                "driver",
+                "platform/board",
+                "platform/cmsis/device",
+                "platform/cmsis/include",
+                "platform/driver/inc",
+                "platform/driver/inc/Legacy",
+                "platform/syscall",
+                "utils"
+            ],
+            "defines": [
+                "USE_HAL_DRIVER",
+                "USE_FULL_LL_DRIVER",
+                "STM32F407xx"
+            ],
+            "compilerPath": "${workspaceFolder}/tools/gcc-arm-none-eabi/10.3/bin/arm-none-eabi-gcc",
+            "cStandard": "c11",
+            "cppStandard": "gnu++11",
+            "intelliSenseMode": "linux-gcc-arm",
+            "browse": {
+                "limitSymbolsToIncludedHeaders": true
+            }
+        }
+    ],
+    "version": 4
+}

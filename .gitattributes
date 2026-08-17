@@ -1,0 +1,11 @@
+* text=auto
+
+# Keep scripts and GNU build files usable from Linux/WSL.
+*.sh text eol=lf
+Makefile text eol=lf
+*.mk text eol=lf
+*.ld text eol=lf
+
+# Keep native Windows command files in CRLF form.
+*.bat text eol=crlf
+*.cmd text eol=crlf
