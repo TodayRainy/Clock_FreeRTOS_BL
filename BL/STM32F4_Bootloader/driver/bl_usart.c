@@ -131,9 +131,10 @@ void bl_usart_write(const uint8_t *data, uint32_t size)
 {
     while (size--)
     {
+        while (USART_GetFlagStatus(USART3, USART_FLAG_TXE) == RESET);
         USART_SendData(USART3, *data++);
-        while (USART_GetFlagStatus(USART3, USART_FLAG_TC) == RESET);
     }
+    while (USART_GetFlagStatus(USART3, USART_FLAG_TC) == RESET);
 
     // // DMA Tranfer 65536 bytes at most
     // while (size > 0)
