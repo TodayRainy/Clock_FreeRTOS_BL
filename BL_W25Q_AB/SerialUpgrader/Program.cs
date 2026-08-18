@@ -1,0 +1,95 @@
+namespace SerialUpgrader
+{
+    internal static class Program
+    {
+        /// <summary>
+        ///  The main entry point for the application.
+        /// </summary>
+        [STAThread]
+        static int Main(string[] args)
+        {
+            if (args.Length == 3 && args[0] == "--upgrade")
+                return RunCommandLineUpgrade(args[1], args[2]).GetAwaiter().GetResult();
+            if (args.Length == 2 && args[0] == "--status")
+                return RunCommandLineStatus(args[1]).GetAwaiter().GetResult();
+
+            // To customize application configuration such as set high DPI settings or default font,
+            // see https://aka.ms/applicationconfiguration.
+            ApplicationConfiguration.Initialize();
+            Application.Run(new Form1());
+            return 0;
+        }
+
+        static async Task<int> RunCommandLineUpgrade(string port, string firmware)
+        {
+            if (!File.Exists(firmware))
+            {
+                Console.WriteLine($"固件文件不存在: {firmware}");
+                return 1;
+            }
+
+            byte[] xbin = await File.ReadAllBytesAsync(firmware);
+            MagicHeader? header = MagicHeader.Parse(xbin);
+            if (header == null)
+            {
+                Console.WriteLine("XBIN校验失败");
+                return 1;
+            }
+
+            Transfer transfer = new(port);
+            transfer.OnEvent += Console.WriteLine;
+            transfer.OnProgress += value => Console.WriteLine($"进度: {value:F1}%");
+
+            string? version = await transfer.GetBootloaderVersion();
+            int? mtu = await transfer.GetBootloaderMTU();
+            if (version == null || mtu == null)
+            {
+                Console.WriteLine("无法连接Bootloader");
+                return 1;
+            }
+            Console.WriteLine($"Bootloader {version}, MTU {mtu}");
+
+            bool ok = await transfer.UpgradeExternalAB(xbin, mtu.Value, header.DataCrc32);
+            Console.WriteLine(ok ? "升级已提交" : "升级失败，活动固件未改变");
+            return ok ? 0 : 1;
+        }
+
+        static async Task<int> RunCommandLineStatus(string port)
+        {
+            Transfer transfer = new(port);
+            string? version = await transfer.GetBootloaderVersion();
+            BootStatus? status = version == null ? null : await transfer.GetBootStatus();
+            if (version == null || status == null)
+            {
+                Console.WriteLine("无法连接Bootloader或读取A/B状态");
+                return 1;
+            }
+
+            Console.WriteLine($"Bootloader {version}");
+            Console.WriteLine($"BCR有效: {status.StateFound}, phase={status.Phase}, " +
+                              $"active={SlotName(status.ActiveSlot)}, pending={SlotName(status.PendingSlot)}, " +
+                              $"attempts={status.AttemptsLeft}, seq={status.Sequence}");
+            Console.WriteLine($"active CRC=0x{status.ActiveCrc32:X8}, pending CRC=0x{status.PendingCrc32:X8}");
+            for (int i = 0; i < status.Slots.Length; ++i)
+            {
+                FirmwareSlotInfo slot = status.Slots[i];
+                Console.WriteLine($"Slot {(char)('A' + i)}: header={slot.HeaderValid}, " +
+                                  $"full={slot.FullValid}, size={slot.DataLength}, " +
+                                  $"CRC=0x{slot.DataCrc32:X8}, version={slot.Version}");
+            }
+
+            /* 查询命令会把Bootloader留在接收循环，查询完主动启动应用。 */
+            if (!await transfer.Boot())
+            {
+                Console.WriteLine("状态已读取，但未能发送启动应用命令");
+                return 1;
+            }
+            return 0;
+        }
+
+        static string SlotName(byte slot)
+        {
+            return slot < 2 ? ((char)('A' + slot)).ToString() : "none";
+        }
+    }
+}
