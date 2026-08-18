@@ -1,0 +1,70 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "debug",
+      "displayName": "STM32 Debug (GCC)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/debug",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-gcc.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "release",
+      "displayName": "STM32 Release (GCC)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-gcc.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "debug",
+      "configurePreset": "debug"
+    },
+    {
+      "name": "release",
+      "configurePreset": "release"
+    },
+    {
+      "name": "bootloader-debug",
+      "configurePreset": "debug",
+      "targets": ["bootloader"]
+    },
+    {
+      "name": "weatherclock-debug",
+      "configurePreset": "debug",
+      "targets": ["weatherclock"]
+    },
+    {
+      "name": "bootloader-release",
+      "configurePreset": "release",
+      "targets": ["bootloader"]
+    },
+    {
+      "name": "weatherclock-release",
+      "configurePreset": "release",
+      "targets": ["weatherclock"]
+    },
+    {
+      "name": "validate-debug",
+      "configurePreset": "debug",
+      "targets": ["validate_images"]
+    },
+    {
+      "name": "validate-release",
+      "configurePreset": "release",
+      "targets": ["validate_images"]
+    }
+  ]
+}

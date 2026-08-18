@@ -1,0 +1,7 @@
+r
+h
+loadbin ../.device-backups/stm32f407_ab_dma_pipeline_v2_0_1_20260818.bin, 0x08000000
+verifybin ../.device-backups/stm32f407_ab_dma_pipeline_v2_0_1_20260818.bin, 0x08000000
+r
+g
+q

@@ -1,0 +1,162 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "CMake: Configure Debug",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--preset", "debug"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Configure Release",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--preset", "release"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "CMake: Build All (Debug)",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "debug", "--parallel"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Configure Debug",
+      "problemMatcher": ["$gcc"],
+      "group": { "kind": "build", "isDefault": true }
+    },
+    {
+      "label": "CMake: Build Bootloader (Debug)",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "bootloader-debug", "--parallel"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Configure Debug",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "CMake: Build WeatherClock (Debug)",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "weatherclock-debug", "--parallel"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Configure Debug",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "CMake: Build All (Release)",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "release", "--parallel"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Configure Release",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "CMake: Validate Images (Debug)",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "validate-debug", "--parallel"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Configure Debug",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "CMake: Validate Images (Release)",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "validate-release", "--parallel"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Configure Release",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "CMake: Build Bootloader (Release)",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "bootloader-release", "--parallel"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Configure Release",
+      "problemMatcher": ["$gcc"]
+    },
+    {
+      "label": "J-Link: Flash Bootloader (Release)",
+      "type": "process",
+      "command": "C:/Program Files (x86)/SEGGER/JLink/JLink.exe",
+      "args": [
+        "-device", "STM32F407VE",
+        "-if", "SWD",
+        "-speed", "100",
+        "-autoconnect", "1",
+        "-CommanderScript", "tools/jlink/flash_bootloader.jlink"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Build Bootloader (Release)",
+      "problemMatcher": []
+    },
+    {
+      "label": "A/B: Upgrade WeatherClock Debug XBIN",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "${workspaceFolder}/SerialUpgrader/bin/Release/net8.0-windows/SerialUpgrader.dll",
+        "--upgrade",
+        "${input:bootPort}",
+        "${workspaceFolder}/build/debug/WeatherClock/stm32f407_upgrade.xbin"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Validate Images (Debug)",
+      "problemMatcher": []
+    },
+    {
+      "label": "A/B: Upgrade WeatherClock Release XBIN",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "${workspaceFolder}/SerialUpgrader/bin/Release/net8.0-windows/SerialUpgrader.dll",
+        "--upgrade",
+        "${input:bootPort}",
+        "${workspaceFolder}/build/release/WeatherClock/stm32f407_upgrade.xbin"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Validate Images (Release)",
+      "problemMatcher": []
+    },
+    {
+      "label": "A/B: Read Status",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "${workspaceFolder}/SerialUpgrader/bin/Release/net8.0-windows/SerialUpgrader.dll",
+        "--status",
+        "${input:bootPort}"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "J-Link: Restore Known-Good 512 KiB Image",
+      "type": "process",
+      "command": "C:/Program Files (x86)/SEGGER/JLink/JLink.exe",
+      "args": [
+        "-device", "STM32F407VE",
+        "-if", "SWD",
+        "-speed", "100",
+        "-autoconnect", "1",
+        "-CommanderScript", "tools/jlink/restore_fast_spidma_final.jlink"
+      ],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "bootPort",
+      "type": "promptString",
+      "description": "Bootloader USART3 的串口号",
+      "default": "COM18"
+    }
+  ]
+}

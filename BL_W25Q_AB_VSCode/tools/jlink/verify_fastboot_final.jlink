@@ -1,0 +1,4 @@
+r
+h
+verifybin ../.device-backups/stm32f407_ab_fastboot_v1_9_1_20260818.bin, 0x08000000
+q

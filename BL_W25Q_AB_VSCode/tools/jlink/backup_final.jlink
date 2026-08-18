@@ -1,0 +1,4 @@
+r
+h
+savebin ../.device-backups/stm32f407_vscode_gcc_final_20260818.bin, 0x08000000, 0x80000
+q

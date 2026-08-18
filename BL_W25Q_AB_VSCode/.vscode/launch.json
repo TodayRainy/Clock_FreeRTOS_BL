@@ -1,0 +1,41 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "J-Link: Bootloader (flash + debug)",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/debug/STM32F4_Bootloader/stm32f407.elf",
+      "request": "launch",
+      "type": "cortex-debug",
+      "servertype": "jlink",
+      "serverpath": "C:/Program Files (x86)/SEGGER/JLink/JLinkGDBServerCL.exe",
+      "armToolchainPath": "E:/GNU Toolchain/bin",
+      "device": "STM32F407VE",
+      "interface": "swd",
+      "serialNumber": "69408257",
+      "runToEntryPoint": "main",
+      "preLaunchCommands": ["directory ."],
+      "svdFile": "${workspaceFolder}/tools/svd/STM32F407.svd",
+      "preLaunchTask": "CMake: Build Bootloader (Debug)",
+      "showDevDebugOutput": "none"
+    },
+    {
+      "name": "J-Link: WeatherClock (attach, no flash)",
+      "cwd": "${workspaceFolder}",
+      "executable": "${workspaceFolder}/build/debug/WeatherClock/stm32f407.elf",
+      "request": "attach",
+      "type": "cortex-debug",
+      "servertype": "jlink",
+      "serverpath": "C:/Program Files (x86)/SEGGER/JLink/JLinkGDBServerCL.exe",
+      "armToolchainPath": "E:/GNU Toolchain/bin",
+      "device": "STM32F407VE",
+      "interface": "swd",
+      "serialNumber": "69408257",
+      "rtos": "FreeRTOS",
+      "preAttachCommands": ["directory ."],
+      "svdFile": "${workspaceFolder}/tools/svd/STM32F407.svd",
+      "preLaunchTask": "CMake: Build WeatherClock (Debug)",
+      "showDevDebugOutput": "none"
+    }
+  ]
+}

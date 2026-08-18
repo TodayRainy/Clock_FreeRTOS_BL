@@ -1,0 +1,4 @@
+r
+h
+savebin ../.device-backups/stm32f407_pre_gcc_boot_20260818.bin, 0x08000000, 0x80000
+q
