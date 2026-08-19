@@ -10,15 +10,18 @@ namespace SerialUpgrader
         [STAThread]
         static int Main(string[] args)
         {
-            if ((args.Length == 3 || args.Length == 4) && args[0] == "--upgrade")
+            if ((args.Length == 3 || args.Length == 4) &&
+                (args[0] == "--upgrade" || args[0] == "--upgrade-full"))
             {
+                bool forceFull = args[0] == "--upgrade-full";
                 int baudRate = Transfer.UpgradeBaudRate;
                 if (args.Length == 4 && !int.TryParse(args[3], out baudRate))
                 {
                     Console.WriteLine($"无效的波特率: {args[3]}");
                     return 1;
                 }
-                return RunCommandLineUpgrade(args[1], args[2], baudRate)
+                return RunCommandLineUpgrade(args[1], args[2], baudRate,
+                                             forceFull)
                        .GetAwaiter().GetResult();
             }
             if (args.Length == 2 && args[0] == "--status")
@@ -34,7 +37,8 @@ namespace SerialUpgrader
         }
 
         static async Task<int> RunCommandLineUpgrade(string port, string firmware,
-                                                     int baudRate)
+                                                     int baudRate,
+                                                     bool forceFull)
         {
             if (!File.Exists(firmware))
             {
@@ -77,7 +81,8 @@ namespace SerialUpgrader
                 return 1;
             }
 
-            bool ok = await transfer.UpgradeExternalAB(xbin, mtu.Value, header.DataCrc32);
+            bool ok = await transfer.UpgradeExternalAB(xbin, mtu.Value, header,
+                                                       forceFull);
             Console.WriteLine(ok ? "升级已提交" : "升级失败，活动固件未改变");
             Console.WriteLine($"含握手总耗时: {totalTimer.Elapsed.TotalSeconds:F2} 秒");
             return ok ? 0 : 1;

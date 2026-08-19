@@ -104,11 +104,17 @@ public static class CRC
 
     public static uint CRC32(byte[] buf)
     {
+        return CRC32(buf.AsSpan());
+    }
+
+    /// <summary>计算一段现有缓冲区的IEEE CRC32，不为分块续传创建临时数组。</summary>
+    public static uint CRC32(ReadOnlySpan<byte> buf)
+    {
         uint crc32val = 0;
         crc32val ^= 0xFFFFFFFF;
 
-        for (int i = 0; i < buf.Length; i++)
-            crc32val = crc32tab[(crc32val ^ buf[i]) & 0xFF] ^ ((crc32val >> 8) & 0x00FFFFFF);
+        foreach (byte value in buf)
+            crc32val = crc32tab[(crc32val ^ value) & 0xFF] ^ ((crc32val >> 8) & 0x00FFFFFF);
 
         return crc32val ^ 0xFFFFFFFF;
     }

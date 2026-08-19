@@ -32,9 +32,9 @@
 #include "elog.h"
 
 #ifdef FIRMWARE_BUILD_PROFILE_DEV
-#define BL_VERSION       "v3.2.0-antirob-dev"
+#define BL_VERSION       "v3.3.0-resume-dev"
 #else
-#define BL_VERSION       "v3.2.0-antirob-prod"
+#define BL_VERSION       "v3.3.0-resume-prod"
 #endif
 #define RX_TIMEOUT_MS              20u
 #define HIGH_SPEED_IDLE_TIMEOUT_MS 2000u
@@ -57,6 +57,11 @@
 #define W25_READ_PARAM_LENGTH         7u
 #define W25_ERASE_PARAM_LENGTH        9u
 #define W25_PROGRAM_HEADER_LENGTH     7u
+#define SLOT_RESUME_FIXED_LENGTH      7u
+#define SLOT_RESUME_CRC_LENGTH        4u
+#define SLOT_RESUME_MAX_BLOCKS        \
+    ((MAGIC_DATA_MAX_SIZE + FIRMWARE_RESUME_BLOCK_SIZE - 1u) / \
+     FIRMWARE_RESUME_BLOCK_SIZE)
 #define EEPROM_READ_PARAM_LENGTH      4u
 #define EEPROM_WRITE_HEADER_LENGTH    4u
 #define EEPROM_MAINTENANCE_BASE       0xFC00u
@@ -91,6 +96,7 @@ typedef enum
     PACKET_OPCODE_SLOT_SNAPSHOT = 0x53,
     PACKET_OPCODE_SLOT_STATUS_FAST = 0x54,
     PACKET_OPCODE_SECURITY_STATUS = 0x55,
+    PACKET_OPCODE_SLOT_RESUME_SCAN = 0x56,
     PACKET_OPCODE_ERASE = 0x81,
     PACKET_OPCODE_PROGRAM = 0x82,
     PACKET_OPCODE_VERIFY = 0x83,
@@ -121,6 +127,7 @@ static packet_state_t packet_state = PACKET_STATE_HEADER;
 static packet_opcode_t packet_opcode;
 static uint16_t packet_payload_length;
 static uint8_t storage_buffer[4096];
+static uint32_t resume_crc32[SLOT_RESUME_MAX_BLOCKS];
 static bool w25_program_ok = true;
 static bool maintenance_unlocked;
 static bool downgrade_authorized;
@@ -561,6 +568,82 @@ static void handle_security_status(void)
                       result, cursor - result);
 }
 
+/**
+ * @brief 使非活动槽Header失效并查找候选固件的安全续传位置。
+ *
+ * 请求格式：slot(1)、data_length(4)、block_count(2)，随后是每个4 KiB应用
+ * 数据块的CRC32。设备按顺序比较并在首个不一致块停止，响应一个槽内绝对
+ * 偏移。最后一块CRC只覆盖真实数据长度。
+ *
+ * 扫描前只把旧Header的magic编程为0，不擦除数据区。这样即使随后立即掉电，
+ * 非活动槽也保持无效；上位机完成数据续传后会擦除Header扇区并最后重写有效
+ * Header。该命令不返回固件原文，也不能操作活动槽，因此属于正常升级接口。
+ */
+static void handle_slot_resume_scan(void)
+{
+    uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
+    uint8_t invalid_magic[4] = {0, 0, 0, 0};
+    uint8_t response[4];
+    uint8_t slot;
+    uint16_t block_count;
+    uint32_t data_length;
+    uint32_t expected_blocks;
+    uint32_t resume_offset;
+    uint32_t index;
+
+    if (packet_payload_length < SLOT_RESUME_FIXED_LENGTH)
+    {
+        protocol_response(PACKET_OPCODE_SLOT_RESUME_SCAN,
+                          PACKET_ERRCODE_PARAM, NULL, 0);
+        return;
+    }
+
+    slot = payload[0];
+    data_length = get_u32(payload + 1);
+    block_count = get_u16(payload + 5);
+    expected_blocks = (data_length + FIRMWARE_RESUME_BLOCK_SIZE - 1u) /
+                      FIRMWARE_RESUME_BLOCK_SIZE;
+    if (slot >= BOOT_SLOT_COUNT || !slot_write_allowed(slot) ||
+        data_length == 0 || data_length > MAGIC_DATA_MAX_SIZE ||
+        block_count != expected_blocks || block_count > SLOT_RESUME_MAX_BLOCKS ||
+        packet_payload_length != SLOT_RESUME_FIXED_LENGTH +
+                                 block_count * SLOT_RESUME_CRC_LENGTH)
+    {
+        protocol_response(PACKET_OPCODE_SLOT_RESUME_SCAN,
+                          PACKET_ERRCODE_PARAM, NULL, 0);
+        return;
+    }
+
+    for (index = 0; index < block_count; ++index)
+        resume_crc32[index] = get_u32(payload + SLOT_RESUME_FIXED_LENGTH +
+                                     index * SLOT_RESUME_CRC_LENGTH);
+
+    /* NOR Flash把任意旧magic可靠地变成0，只涉及1->0，不需要先擦除。 */
+    if (!w25q_program((w25q_chip_t)slot, 0, invalid_magic,
+                      sizeof(invalid_magic)))
+    {
+        w25_program_ok = false;
+        protocol_response(PACKET_OPCODE_SLOT_RESUME_SCAN,
+                          PACKET_ERRCODE_VERIFY, NULL, 0);
+        return;
+    }
+    w25_program_ok = true;
+
+    if (!firmware_slot_find_resume_offset(slot, data_length, resume_crc32,
+                                          block_count, &resume_offset))
+    {
+        protocol_response(PACKET_OPCODE_SLOT_RESUME_SCAN,
+                          PACKET_ERRCODE_VERIFY, NULL, 0);
+        return;
+    }
+
+    put_u32(response, resume_offset);
+    log_i("resume scan slot=%u matched=%u/%u bytes", slot,
+          resume_offset - MAGIC_HEADER_AREA_SIZE, data_length);
+    protocol_response(PACKET_OPCODE_SLOT_RESUME_SCAN, PACKET_ERRCODE_OK,
+                      response, sizeof(response));
+}
+
 static void handle_slot_set_active(void)
 {
     boot_state_t state;
@@ -904,6 +987,7 @@ static boot_protocol_action_t handle_packet(void)
         case PACKET_OPCODE_SLOT_SNAPSHOT:   handle_slot_snapshot(); break;
         case PACKET_OPCODE_SLOT_STATUS_FAST: handle_slot_status_fast(); break;
         case PACKET_OPCODE_SECURITY_STATUS: handle_security_status(); break;
+        case PACKET_OPCODE_SLOT_RESUME_SCAN: handle_slot_resume_scan(); break;
         case PACKET_OPCODE_ERASE:           handle_legacy_erase(); break;
         case PACKET_OPCODE_PROGRAM:         handle_legacy_program(); break;
         case PACKET_OPCODE_VERIFY:          handle_legacy_verify(); break;

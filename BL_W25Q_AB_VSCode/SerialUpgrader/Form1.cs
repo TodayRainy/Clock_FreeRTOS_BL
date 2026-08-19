@@ -135,8 +135,8 @@ namespace SerialUpgrader
             }
 
             textBoxLog.AppendText("开始写入外部非活动固件槽\r\n");
-            bool opsuccess = await transfer.UpgradeExternalAB(xbin, (int)mtu,
-                                                               header.DataCrc32);
+            bool opsuccess = await transfer.UpgradeExternalAB(
+                xbin, (int)mtu, header, checkBoxForceFull.Checked);
             if (!opsuccess)
             {
                 textBoxLog.AppendText("A/B升级提交失败；原活动固件保持不变\r\n");

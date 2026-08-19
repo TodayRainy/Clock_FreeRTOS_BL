@@ -9,17 +9,20 @@
 - VS Code/GCC 迁移、构建、调试和实测说明：[`VSCODE_GCC_MIGRATION.md`](VSCODE_GCC_MIGRATION.md)
 - 当前代码架构、状态机、协议与维护指南：[`CODE_GUIDE.md`](CODE_GUIDE.md)
 - 固件签名、看门狗和 DEV/PROD 权限说明：[`SECURE_BOOT_GUIDE.md`](SECURE_BOOT_GUIDE.md)
+- 断点续传协议、掉电边界和实测说明：[`RESUMABLE_UPGRADE_GUIDE.md`](RESUMABLE_UPGRADE_GUIDE.md)
 - 设计、测试、使用和 ST-Link 救援说明：[`AB_BOOTLOADER_REPORT.md`](AB_BOOTLOADER_REPORT.md)
 - 初始及最终安全基线：[`SAFETY_BASELINE.md`](SAFETY_BASELINE.md)
 
 正式升级只写非活动 W25Q128 槽，Bootloader 本身不支持在线自更新。
 
-当前 Bootloader 为 `v3.2.0-antirob-dev/prod`。它保留原有2 Mbps、USART3 DMA、
+当前 Bootloader 为 `v3.3.0-resume-dev/prod`。它保留原有2 Mbps、USART3 DMA、
 8 KiB流水传输和W25Q SPI DMA，同时把XBIN升级为签名格式v2：Bootloader必须用
 内置公钥通过ECDSA-P256验签，并复核应用SHA-256、CRC32和向量表后才允许安装。
 Bootloader与应用共用IWDG，Trial只有在核心板级/显示初始化完成并继续稳定调度
 5秒后才会确认并提高安全版本下限。普通升级禁止安装低于下限的固件；长按KEY2
 可人工安装合法签名的旧版本，但不会降低下限。PROD的原始维护命令也要求KEY2。
+外部槽上传默认按4 KiB CRC扫描已写数据，从安全断点继续；旧Bootloader不支持
+新命令时自动回退完整升级，用户也可以显式选择强制完整重写。
 
 常用命令：
 
@@ -47,6 +50,9 @@ dotnet .\SerialUpgrader\bin\Release\net8.0-windows\SerialUpgrader.dll `
   --upgrade COM18 .\build\release\WeatherClock\stm32f407_upgrade.xbin
 ```
 
+禁用断点续传并强制完整重写时，把`--upgrade`换成`--upgrade-full`。图形界面提供
+同名复选框。
+
 端口号以Windows当前枚举为准。命令末尾可增加 `921600`，在较长或质量一般的
 TTL接线上使用较保守的高速档。
 
@@ -57,8 +63,9 @@ dotnet .\SerialUpgrader\bin\Release\net8.0-windows\SerialUpgrader.dll `
   --maintenance-probe COM18
 ```
 
-当前实板已完成v3签名升级、伪造签名拒绝、Trial自动回退、DEV/PROD权限和IWDG
-持续运行测试；板载最终状态与可恢复的512 KiB镜像记录在`SAFETY_BASELINE.md`。
+当前实板已完成v3签名升级、伪造签名拒绝、Trial自动回退、DEV/PROD权限、IWDG
+持续运行以及11.9%/51.7%/96.7%三次传输中断恢复测试；板载最终状态与可恢复的
+512 KiB镜像记录在`SAFETY_BASELINE.md`。
 
 每个配置的 ELF、HEX、BIN 和 XBIN 位于 `build/debug` 或 `build/release`，不会
 相互覆盖。应用仍必须通过 XBIN/A-B 流程安装；不要把裸应用 BIN 当作正常升级包。

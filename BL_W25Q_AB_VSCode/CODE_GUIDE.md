@@ -1,6 +1,6 @@
 # BL_W25Q_AB_VSCode 代码说明
 
-本文面向后续维护者，说明 `v3.0.0-signed-dev/prod` 的代码边界、数据格式、
+本文面向后续维护者，说明 `v3.3.0-resume-dev/prod` 的代码边界、数据格式、
 启动状态机、升级协议、掉电恢复顺序以及 VS Code/CMake/GCC/J-Link 工作流。
 设计验证记录和历次性能数据分别见 `AB_BOOTLOADER_REPORT.md`、
 `TRANSFER_OPTIMIZATION_REPORT.md` 与 `SAFETY_BASELINE.md`。
@@ -275,6 +275,7 @@ ACK，再切换 USART；上位机切换后用版本查询复核链路。
 | `0x53` | SLOT_SNAPSHOT | 首次部署时快照当前内部固件 |
 | `0x54` | SLOT_STATUS_FAST | 只返回 17 字节 BCR，供升级选槽 |
 | `0x55` | SECURITY_STATUS | 返回安全版本下限、pending版本和KEY2授权状态 |
+| `0x56` | SLOT_RESUME_SCAN | 使非活动槽Header失效并返回4 KiB CRC续传位置 |
 | `0x81..0x83` | 旧内部命令 | 兼容维护；Bootloader 区禁止擦写 |
 
 错误码还包含`DENIED`。DEV构建开放工程维护命令；PROD只有长按KEY2进入时开放
@@ -320,21 +321,24 @@ W25Q 连续读取的命令和 24 位地址仍由 CPU 发送；数据阶段同时
 
 ## 13. 上位机升级顺序
 
-`SerialUpgrader/Transfer.cs::UpgradeExternalAB()` 执行：
+`SerialUpgrader/Transfer.cs::UpgradeExternalAB()` 默认执行：
 
 1. 115200 查询版本和 MTU；
 2. 协商到默认 2 Mbps并再次查询版本；
 3. 快速读取 BCR，目标槽固定为 `active_slot ^ 1`；
 4. 首次部署没有 BCR 时，把内部有效应用快照到 Slot A；
-5. 按 64 KiB、32 KiB、4 KiB 组合擦除目标范围；
-6. 先发送 XBIN 的 256 字节之后内容；
-7. 最后写入前 256 字节有效 Header；
-8. `SLOT_ACTIVATE` 携带槽号和上位机解析出的数据 CRC；
-9. Bootloader全量验签并检查安全版本；正常降级返回`DENIED`；
-10. 保存`InstallPending`和pending安全版本并复位。
+5. 对XBIN应用区一次性生成4 KiB分块CRC，发送`SLOT_RESUME_SCAN`；
+6. Bootloader先把非活动槽magic编程为0，再顺序扫描至首个不一致块；
+7. 上位机回退到前一个32 KiB擦除边界，只擦除并发送剩余应用数据；
+8. 擦除首扇区，最后写入前256字节有效Header；
+9. `SLOT_ACTIVATE` 携带槽号和上位机解析出的数据CRC；
+10. Bootloader全量验签并检查安全版本；正常降级返回`DENIED`；
+11. 保存`InstallPending`和pending安全版本并复位。
 
-先写主体、最后写 Header 意味着上传进程被终止时，目标槽保持
-`header=false`，不会成为可安装镜像。
+先失效旧Header、最后提交新Header，意味着上传进程被终止时目标槽保持
+`header=false`，不会成为可安装镜像。`0x56`不受支持时，上位机自动使用旧版全量
+流程；`--upgrade-full`或GUI复选框也可主动禁用续传。详细协议见
+`RESUMABLE_UPGRADE_GUIDE.md`。
 
 ## 14. CMake 构建与产物
 
@@ -436,16 +440,18 @@ SHA256 62687A3225954BCAFA13DC741CFC8CAB2D4ED46120CAF3C36818C01B9D1BCE1D
 
 | 项目 | 结果 |
 | --- | ---: |
-| Bootloader版本 | `v3.2.0-antirob-dev/prod` |
-| Release Flash（DEV） | 27,856 / 49,152字节，56.67% |
-| Release RAM | 35,624 / 131,072 字节，27.18% |
+| Bootloader版本 | `v3.3.0-resume-dev/prod` |
+| Release Flash（DEV） | 28,268 / 49,152字节，57.51% |
+| Release RAM | 36,072 / 131,072 字节，27.52% |
 | 应用Payload | 308,868字节 |
-| 2 Mbps 传输及 W25 编程 | 2.86 秒 |
-| 完整升级含握手 | 4.46～4.49 秒 |
+| 内容不同的自动续传升级 | 4.36秒 |
+| 强制完整重写 | 4.58秒 |
+| 数据100%复用 | 0.69～0.70秒 |
+| 96.7%中断后恢复 | 复用290,816字节，总计1.14秒 |
 | 升级前快速状态 | 0.02 秒 |
-| 单槽完整校验与提交 | 0.19 秒 |
-| 最终 BCR | `Normal / active=A / pending=none / security=1/0 / sequence=171` |
-| 最终 Slot A/B | `v1.4.0-260819-1310-ab`，CRC `0x45A5024D`，完整有效 |
+| 单槽完整校验与提交 | 0.40秒（含SHA-256/ECDSA） |
+| 最终 BCR | `Normal / active=B / pending=none / security=1/0 / sequence=191` |
+| 最终 Slot A/B | `v1.4.0-260819-1353-ab`，CRC `0x45A5024D`，完整有效 |
 
-防降级迁移、正常拒绝、人工授权和双槽恢复已在实板完成；详细边界与测试方式见
-`SECURE_BOOT_GUIDE.md`。
+防降级迁移、正常拒绝、人工授权、双槽恢复及三次断点续传故障注入已在实板完成；
+详细边界与测试方式见`SECURE_BOOT_GUIDE.md`和`RESUMABLE_UPGRADE_GUIDE.md`。

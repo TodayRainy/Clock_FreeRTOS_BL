@@ -208,3 +208,34 @@ SHA-256为`365043913AD00CCF6D924A919AFF0A28F48753901FFC66B27CB9F7ED016EB9BE`。
 `tools/jlink/verify_antirob_v3_2_final.jlink`。本轮未修改RDP、WRP或其他Option
 Bytes；最终J-Link探测到VTref约3.29 V，PC位于应用区`0x08013DCC`，板卡处于正常
 运行状态。
+
+## v3.3断点续传救援基线
+
+- Bootloader版本：`v3.3.0-resume-dev`；
+- DEV Release：Flash 28,268字节/48 KiB，RAM 36,072字节/128 KiB；
+- WeatherClock Release：Flash 308,868字节/448 KiB，RAM 115,536字节/128 KiB；
+- 最终BCR：`Normal / active=B / pending=none / attempts=0 / sequence=191`；
+- 安全版本：下限1、pending 0、KEY2降级授权关闭；
+- Slot A/B：版本均为`v1.4.0-260819-1353-ab`，Payload CRC32均为
+  `0x45A5024D`，Header、数据、SHA-256和ECDSA签名均有效。
+
+实板先验证目标数据100%相同时只重建Header：扫描0.18秒，A/B升级总耗时0.69秒。
+随后使用合法签名且SSID为`BBBBB`的临时测试包，在11.9%、51.7%和96.7%三处
+强制终止上位机进程；每次复位后BCR仍为Normal且原活动槽完整。52%半成品恢复时
+复用159,744字节，97%半成品恢复时复用290,816字节，最终续传总耗时1.14秒并
+通过Trial确认。之后重新安装正式`AAAAA`固件：内容不同路径耗时4.36秒；显式
+`--upgrade-full`完整重写耗时4.58秒，含握手4.67秒。最后连续恢复两槽为上述
+1353正式版本。
+
+最终512 KiB救援镜像为
+`../.device-backups/stm32f407_resume_v3_3_final_20260819.bin`，长度524,288字节，
+SHA-256为`8845B85986DCE9233EF7CF98E4338651F733FB360376B6831DDE7EC545605CAD`。
+J-Link已完成整片`verifybin`，镜像前28,268字节与Release Bootloader逐字节一致。
+备份、恢复和只读验证脚本分别为：
+
+- `tools/jlink/backup_resume_v3_3_final.jlink`；
+- `tools/jlink/restore_resume_v3_3_final.jlink`；
+- `tools/jlink/verify_resume_v3_3_final.jlink`。
+
+本轮没有修改RDP、WRP或其他Option Bytes。最终J-Link VTref约3.29 V，备份前PC为
+`0x08013DCC`，位于WeatherClock应用区；备份完成后已恢复CPU运行。

@@ -1,6 +1,6 @@
 # 固件签名、IWDG 与维护权限说明
 
-本文记录 `v3.2.0-antirob-dev/prod` 的签名、防降级、IWDG和维护权限、代码边界、构建方式和部署
+本文记录 `v3.3.0-resume-dev/prod` 的签名、防降级、IWDG和维护权限、代码边界、构建方式和部署
 注意事项。原有外部 A/B 状态机、掉电提交顺序和高速串口协议没有被替换。
 
 ## 1. 这次解决了什么
@@ -225,6 +225,9 @@ dotnet .\SerialUpgrader\bin\Release\net8.0-windows\SerialUpgrader.dll `
 安全版本下限保存在EEPROM双副本BCR中，没有使用不可逆硬件计数器；拥有J-Link的
 设备所有者仍能恢复或重置开发板。XBIN内容没有加密，Bootloader本身也仍只通过
 SWD更新，这些是后续可以独立讨论的保密和Bootloader自身保护主题。
+
+外部槽断点续传只用分块CRC定位已经存在的数据，最终信任边界没有改变；完整流程
+和中断测试见`RESUMABLE_UPGRADE_GUIDE.md`。
 
 micro-ecc按其BSD-2-Clause许可原样放在
 `STM32F4_Bootloader/third_lib/micro-ecc/`，来源提交和裁剪方式记录在同目录

@@ -36,6 +36,7 @@
             textBoxLog = new TextBox();
             progressBar = new ProgressBar();
             buttonUpgrade = new Button();
+            checkBoxForceFull = new CheckBox();
             SuspendLayout();
             // 
             // label1
@@ -84,7 +85,17 @@
             comboBoxSerialPort.Name = "comboBoxSerialPort";
             comboBoxSerialPort.Size = new Size(179, 39);
             comboBoxSerialPort.TabIndex = 4;
-            // 
+            //
+            // checkBoxForceFull
+            //
+            checkBoxForceFull.AutoSize = true;
+            checkBoxForceFull.Location = new Point(350, 65);
+            checkBoxForceFull.Name = "checkBoxForceFull";
+            checkBoxForceFull.Size = new Size(326, 35);
+            checkBoxForceFull.TabIndex = 5;
+            checkBoxForceFull.Text = "强制完整重写（禁用断点续传）";
+            checkBoxForceFull.UseVisualStyleBackColor = true;
+            //
             // textBoxLog
             // 
             textBoxLog.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
@@ -92,7 +103,7 @@
             textBoxLog.Multiline = true;
             textBoxLog.Name = "textBoxLog";
             textBoxLog.Size = new Size(816, 533);
-            textBoxLog.TabIndex = 5;
+            textBoxLog.TabIndex = 6;
             // 
             // progressBar
             // 
@@ -100,7 +111,7 @@
             progressBar.Location = new Point(28, 647);
             progressBar.Name = "progressBar";
             progressBar.Size = new Size(816, 46);
-            progressBar.TabIndex = 6;
+            progressBar.TabIndex = 7;
             // 
             // buttonUpgrade
             // 
@@ -109,7 +120,7 @@
             buttonUpgrade.Location = new Point(28, 699);
             buttonUpgrade.Name = "buttonUpgrade";
             buttonUpgrade.Size = new Size(816, 86);
-            buttonUpgrade.TabIndex = 7;
+            buttonUpgrade.TabIndex = 8;
             buttonUpgrade.Text = "升 级";
             buttonUpgrade.UseVisualStyleBackColor = true;
             buttonUpgrade.Click += buttonUpgrade_Click;
@@ -122,6 +133,7 @@
             Controls.Add(buttonUpgrade);
             Controls.Add(progressBar);
             Controls.Add(textBoxLog);
+            Controls.Add(checkBoxForceFull);
             Controls.Add(comboBoxSerialPort);
             Controls.Add(label2);
             Controls.Add(buttonSelectFirmware);
@@ -147,5 +159,6 @@
         private TextBox textBoxLog;
         private ProgressBar progressBar;
         private Button buttonUpgrade;
+        private CheckBox checkBoxForceFull;
     }
 }

@@ -85,6 +85,8 @@ public sealed class Transfer : IDisposable
     private const int PROGRAM_PARAM_HEADER_SIZE = 8;  // uint addr + uint size
     private const int W25_PROGRAM_PARAM_HEADER_SIZE = 7;
     private const int W25_PROGRAM_DATA_MAX = 8192;
+    private const int RESUME_BLOCK_SIZE = 4096;
+    private const uint RESUME_ERASE_ALIGNMENT = 32 * 1024;
     
     public Action<double>? OnProgress;
     public Action<string>? OnEvent;
@@ -119,6 +121,7 @@ public sealed class Transfer : IDisposable
         SLOT_SNAPSHOT = 0x53,
         SLOT_STATUS_FAST = 0x54,
         SECURITY_STATUS = 0x55,
+        SLOT_RESUME_SCAN = 0x56,
     }
 
     enum INQUIRY
@@ -164,6 +167,9 @@ public sealed class Transfer : IDisposable
 
         DataChannel = Channel.CreateUnbounded<byte>();
     }
+
+    readonly record struct ResumeScanResult(bool Supported, bool Success,
+                                            uint Offset);
 
     /// <summary>
     /// 打开一次串口会话。升级过程保持同一连接，避免每个4 KiB数据包都让
@@ -635,6 +641,60 @@ public sealed class Transfer : IDisposable
         return await GetBootStatus();
     }
 
+    /// <summary>
+    /// 构造断点扫描请求。CRC列表只覆盖应用数据区，每个元素对应一个4 KiB块，
+    /// 最后一块按实际数据长度计算，不包含扇区尾部的擦除填充。
+    /// </summary>
+    static byte[] BuildResumeScanRequest(byte slot, byte[] xbin,
+                                         MagicHeader header)
+    {
+        int dataOffset = checked((int)header.DataOffset);
+        int dataLength = checked((int)header.DataLength);
+        int blockCount = (dataLength + RESUME_BLOCK_SIZE - 1) /
+                         RESUME_BLOCK_SIZE;
+        byte[] param = new byte[7 + blockCount * sizeof(uint)];
+
+        param[0] = slot;
+        BitConverter.GetBytes(header.DataLength).CopyTo(param, 1);
+        BitConverter.GetBytes((ushort)blockCount).CopyTo(param, 5);
+        for (int block = 0; block < blockCount; ++block)
+        {
+            int offset = block * RESUME_BLOCK_SIZE;
+            int size = Math.Min(RESUME_BLOCK_SIZE, dataLength - offset);
+            uint crc = CRC.CRC32(xbin.AsSpan(dataOffset + offset, size));
+            BitConverter.GetBytes(crc).CopyTo(param, 7 + block * sizeof(uint));
+        }
+        return param;
+    }
+
+    /// <summary>
+    /// 让Bootloader使非活动槽Header失效，并返回与当前XBIN连续匹配的数据末端。
+    /// 旧Bootloader明确返回OPCODE时标记为不支持；超时或其他错误不会被误当成
+    /// 旧版本，因为此时继续擦除可能掩盖真实链路故障。
+    /// </summary>
+    async Task<ResumeScanResult> ScanResumeOffset(byte slot, byte[] xbin,
+                                                  MagicHeader header)
+    {
+        byte[] param = BuildResumeScanRequest(slot, xbin, header);
+        Response? response = await PacketRequest(OPCODE.SLOT_RESUME_SCAN, param,
+                                                 TimeSpan.FromSeconds(5));
+        if (response == null)
+            return new ResumeScanResult(true, false, 0);
+        if (response.Errcode == ERRCODE.OPCODE)
+            return new ResumeScanResult(false, true, 0);
+        if (response.Errcode != ERRCODE.OK || response.Param?.Length != 4)
+            return new ResumeScanResult(true, false, 0);
+
+        uint offset = BitConverter.ToUInt32(response.Param, 0);
+        uint dataEnd = header.DataOffset + header.DataLength;
+        bool alignedBlock = offset >= header.DataOffset && offset < dataEnd &&
+                            (offset - header.DataOffset) % RESUME_BLOCK_SIZE == 0;
+        if (offset != dataEnd && !alignedBlock)
+            return new ResumeScanResult(true, false, 0);
+
+        return new ResumeScanResult(true, true, offset);
+    }
+
     async Task<bool> W25Erase(byte slot, uint address, uint size)
     {
         byte[] param = new byte[9];
@@ -714,10 +774,16 @@ public sealed class Transfer : IDisposable
     }
 
     /// <summary>
-    /// 把完整XBIN写入非活动槽，校验后提交为InstallPending。
-    /// 提交前不会改写STM32内部应用区或当前活动槽。
+    /// 把XBIN写入非活动槽，完成签名校验后提交为InstallPending。
+    ///
+    /// 默认先使用4 KiB分块CRC查找已经落盘的连续前缀，只擦写首个不一致块
+    /// 之后的区域。旧Bootloader不支持扫描Opcode时自动执行原有全量流程。
+    /// 无论采用哪条路径，Header都最后写入，提交前不会改写内部应用或活动槽。
     /// </summary>
-    public async Task<bool> UpgradeExternalAB(byte[] xbin, int mtu, uint expectedDataCrc)
+    /// <param name="forceFull">true时跳过断点扫描并完整擦写目标槽。</param>
+    public async Task<bool> UpgradeExternalAB(byte[] xbin, int mtu,
+                                              MagicHeader header,
+                                              bool forceFull = false)
     {
         Stopwatch totalTimer = Stopwatch.StartNew();
         Stopwatch stepTimer = Stopwatch.StartNew();
@@ -753,25 +819,96 @@ public sealed class Transfer : IDisposable
 
         byte target = (byte)(status.ActiveSlot ^ 1);
         uint eraseSize = (uint)((xbin.Length + 4095) & ~4095);
+        bool resumable = false;
+        uint resumeOffset = header.DataOffset;
         OnEvent?.Invoke($"活动槽: {(char)('A' + status.ActiveSlot)}，写入非活动槽: {(char)('A' + target)}");
-        OnEvent?.Invoke($"擦除外部槽区: {eraseSize} 字节");
-        stepTimer.Restart();
-        if (!await W25Erase(target, 0, eraseSize))
-            return false;
-        OnEvent?.Invoke($"外部槽擦除耗时: {stepTimer.Elapsed.TotalSeconds:F2} 秒");
 
-        /* 首256字节包含有效魔数。先写其余内容，最后提交这256字节。 */
+        if (!forceFull)
+        {
+            stepTimer.Restart();
+            ResumeScanResult scan = await ScanResumeOffset(target, xbin, header);
+            if (!scan.Supported)
+            {
+                OnEvent?.Invoke("Bootloader不支持断点扫描，回退到兼容的完整升级");
+            }
+            else if (!scan.Success)
+            {
+                OnEvent?.Invoke("断点扫描失败，未擦写活动固件");
+                return false;
+            }
+            else
+            {
+                resumable = true;
+                resumeOffset = scan.Offset;
+                OnEvent?.Invoke($"断点扫描耗时: {stepTimer.Elapsed.TotalSeconds:F2} 秒");
+            }
+        }
+        else
+        {
+            OnEvent?.Invoke("已选择强制完整重写，跳过断点扫描");
+        }
+
         stepTimer.Restart();
-        byte[] body = xbin[256..];
-        if (!await W25Program(target, 256, body, mtu, 0, xbin.Length))
-            return false;
-        if (!await W25Program(target, 0, xbin[..256], mtu, body.Length, xbin.Length))
-            return false;
+        if (!resumable)
+        {
+            OnEvent?.Invoke($"擦除外部槽区: {eraseSize} 字节");
+            if (!await W25Erase(target, 0, eraseSize))
+                return false;
+
+            /* 兼容旧Bootloader：保持原有布局传输，Header仍在最后提交。 */
+            byte[] body = xbin[256..];
+            if (!await W25Program(target, 256, body, mtu, 0, xbin.Length) ||
+                !await W25Program(target, 0, xbin[..256], mtu,
+                                  body.Length, xbin.Length))
+                return false;
+        }
+        else
+        {
+            uint dataEnd = header.DataOffset + header.DataLength;
+            int progressTotal = checked((int)header.DataLength + 256);
+            bool headerSectorErased = false;
+
+            if (resumeOffset < dataEnd)
+            {
+                /*
+                 * 从前一个32 KiB边界重写少量已匹配数据，使W25Q驱动可以优先
+                 * 使用Block Erase，避免从非对齐地址连续执行大量4 KiB擦除。
+                 */
+                uint eraseStart = resumeOffset & ~(RESUME_ERASE_ALIGNMENT - 1u);
+                uint writeStart = Math.Max(eraseStart, header.DataOffset);
+                uint eraseEnd = (dataEnd + RESUME_BLOCK_SIZE - 1u) &
+                                ~(uint)(RESUME_BLOCK_SIZE - 1);
+                uint preserved = writeStart - header.DataOffset;
+
+                OnEvent?.Invoke($"已复用 {preserved} 字节，从槽偏移0x{writeStart:X}继续");
+                if (!await W25Erase(target, eraseStart, eraseEnd - eraseStart))
+                    return false;
+                headerSectorErased = eraseStart == 0;
+
+                byte[] remaining = xbin[(int)writeStart..(int)dataEnd];
+                if (!await W25Program(target, writeStart, remaining, mtu,
+                                      checked((int)preserved), progressTotal))
+                    return false;
+            }
+            else
+            {
+                OnEvent?.Invoke($"应用数据已完整存在，复用全部 {header.DataLength} 字节");
+                OnProgress?.Invoke((double)header.DataLength / progressTotal * 100.0);
+            }
+
+            /* 扫描命令已把magic清零；真正提交Header前确保整个首扇区已擦除。 */
+            if (!headerSectorErased &&
+                !await W25Erase(target, 0, RESUME_BLOCK_SIZE))
+                return false;
+            if (!await W25Program(target, 0, xbin[..256], mtu,
+                                  checked((int)header.DataLength), progressTotal))
+                return false;
+        }
         OnEvent?.Invoke($"串口传输及W25编程耗时: {stepTimer.Elapsed.TotalSeconds:F2} 秒");
 
         OnEvent?.Invoke("外部写入完成，正在由Bootloader校验完整固件并提交试运行");
         stepTimer.Restart();
-        if (!await ActivateSlot(target, expectedDataCrc))
+        if (!await ActivateSlot(target, header.DataCrc32))
             return false;
         OnEvent?.Invoke($"完整校验及提交耗时: {stepTimer.Elapsed.TotalSeconds:F2} 秒");
 

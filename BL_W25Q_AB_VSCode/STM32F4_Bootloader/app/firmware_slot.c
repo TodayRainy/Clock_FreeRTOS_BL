@@ -166,6 +166,50 @@ bool firmware_slot_validate(uint8_t slot, magic_header_t *header)
 }
 
 /**
+ * @copydoc firmware_slot_find_resume_offset
+ */
+bool firmware_slot_find_resume_offset(uint8_t slot, uint32_t data_length,
+                                      const uint32_t *expected_crc32,
+                                      uint16_t block_count,
+                                      uint32_t *resume_offset)
+{
+    uint32_t address = MAGIC_HEADER_AREA_SIZE;
+    uint32_t remaining = data_length;
+    uint32_t expected_blocks;
+    uint32_t index;
+
+    if (slot >= W25Q_CHIP_COUNT || data_length == 0 ||
+        data_length > MAGIC_DATA_MAX_SIZE || expected_crc32 == NULL ||
+        resume_offset == NULL)
+        return false;
+
+    expected_blocks = (data_length + FIRMWARE_RESUME_BLOCK_SIZE - 1u) /
+                      FIRMWARE_RESUME_BLOCK_SIZE;
+    if (block_count != expected_blocks)
+        return false;
+
+    for (index = 0; index < expected_blocks; ++index)
+    {
+        uint32_t chunk = remaining > FIRMWARE_RESUME_BLOCK_SIZE ?
+                         FIRMWARE_RESUME_BLOCK_SIZE : remaining;
+
+        w25q_read((w25q_chip_t)slot, address, install_buffer, chunk);
+        if (crc32(install_buffer, chunk) != expected_crc32[index])
+        {
+            *resume_offset = address;
+            return true;
+        }
+
+        watchdog_refresh();
+        address += chunk;
+        remaining -= chunk;
+    }
+
+    *resume_offset = MAGIC_HEADER_AREA_SIZE + data_length;
+    return true;
+}
+
+/**
  * @copydoc firmware_slot_install
  */
 bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)

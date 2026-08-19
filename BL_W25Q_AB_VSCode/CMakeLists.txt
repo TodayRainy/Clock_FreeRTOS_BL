@@ -167,7 +167,7 @@ if(HOST_GCC_EXECUTABLE)
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         VERBATIM
     )
-    add_custom_target(test_firmware_security_policy
+add_custom_target(test_firmware_security_policy
         COMMAND ${CMAKE_COMMAND} -E make_directory .cache
         COMMAND ${HOST_GCC_EXECUTABLE}
                 -std=c11 -O2 -Wall -Wextra -Ishared
@@ -191,6 +191,16 @@ else()
     )
 endif()
 
+# 断点续传布局不依赖板卡：对生成的真实XBIN及合成的10%/50%/95%中断镜像
+# 检查4 KiB分块、首个差异定位、32 KiB擦除回退和协议请求上限。
+add_custom_target(test_resume_algorithm
+    COMMAND ${Python3_EXECUTABLE} ../../tools/test_resume_algorithm.py
+            WeatherClock/stm32f407_upgrade.xbin
+    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+    DEPENDS weatherclock
+    COMMENT "Testing resumable-upgrade block planning"
+)
+
 # 构造CRC、SHA、元数据和签名被篡改的镜像，确认它们均无法通过信任边界。
 add_custom_target(test_firmware_security
     COMMAND ${Python3_EXECUTABLE} ../../tools/test_firmware_security.py
@@ -199,5 +209,6 @@ add_custom_target(test_firmware_security
             --openssl ${FIRMWARE_OPENSSL_EXECUTABLE}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DEPENDS test_firmware_crypto_c test_firmware_security_policy
+            test_resume_algorithm
     COMMENT "Testing rejection of forged signed firmware"
 )
