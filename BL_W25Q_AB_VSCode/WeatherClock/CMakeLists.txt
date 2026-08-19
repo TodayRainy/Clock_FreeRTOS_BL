@@ -17,6 +17,7 @@ set(WEATHERCLOCK_SOURCES
     app/main.c
     app/ab_confirm.c
     app/health_monitor.c
+    app/ota.c
     app/board.c
     app/wifi.c
     app/weather.c
@@ -55,6 +56,10 @@ set(WEATHERCLOCK_SOURCES
     driver/aht20/aht20.c
     driver/st7789/st7789.c
     driver/esp_at/esp_at.c
+    ${CMAKE_SOURCE_DIR}/STM32F4_Bootloader/driver/w25q.c
+    ${CMAKE_SOURCE_DIR}/STM32F4_Bootloader/app/magic_header.c
+    ${CMAKE_SOURCE_DIR}/STM32F4_Bootloader/third_lib/crc/crc32.c
+    ${CMAKE_SOURCE_DIR}/STM32F4_Bootloader/third_lib/sha256/sha256.c
     driver/tim_delay/tim_delay.c
     driver/led/led.c
     firmware/cmsis/device/gcc/startup_stm32f407xx.s
@@ -96,6 +101,7 @@ target_compile_definitions(weatherclock PRIVATE
     USE_STDPERIPH_DRIVER
     HSE_VALUE=8000000
     ${FIRMWARE_PROFILE_DEFINITION}
+    APP_VERSION="${WEATHERCLOCK_VERSION}"
 )
 
 target_include_directories(weatherclock PRIVATE
@@ -111,6 +117,10 @@ target_include_directories(weatherclock PRIVATE
     driver/esp_at
     driver/bl24c512
     driver/led
+    ${CMAKE_SOURCE_DIR}/STM32F4_Bootloader/driver
+    ${CMAKE_SOURCE_DIR}/STM32F4_Bootloader/app
+    ${CMAKE_SOURCE_DIR}/STM32F4_Bootloader/third_lib/crc
+    ${CMAKE_SOURCE_DIR}/STM32F4_Bootloader/third_lib/sha256
     firmware/cmsis/core
     firmware/cmsis/device
     firmware/driver/inc
@@ -144,6 +154,7 @@ add_custom_command(TARGET weatherclock POST_BUILD
             --public-key ${FIRMWARE_VERIFY_KEY}
             --openssl ${FIRMWARE_OPENSSL_EXECUTABLE}
             --security-version ${FIRMWARE_SECURITY_VERSION}
+            --version ${WEATHERCLOCK_VERSION}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Generating WeatherClock HEX/BIN/XBIN"
 )

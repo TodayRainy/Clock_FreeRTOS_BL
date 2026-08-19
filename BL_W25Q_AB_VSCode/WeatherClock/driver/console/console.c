@@ -130,7 +130,7 @@ void DMA2_Stream7_IRQHandler(void)
 {
     if (DMA_GetITStatus(DMA2_Stream7, DMA_IT_TCIF7) == SET)
     {
-        BaseType_t pxHigherPriorityTaskWoken;
+        BaseType_t pxHigherPriorityTaskWoken = pdFALSE;
         xSemaphoreGiveFromISR(write_async_semaphore, &pxHigherPriorityTaskWoken);
         portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
         

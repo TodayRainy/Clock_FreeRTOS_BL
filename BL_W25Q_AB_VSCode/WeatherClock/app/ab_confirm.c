@@ -58,7 +58,7 @@ static bool state_valid(const boot_state_t *state)
 /**
  * @brief 读取两份BCR并选择sequence较大的有效记录。
  */
-static bool load_state(boot_state_t *state)
+bool ab_boot_state_load(boot_state_t *state)
 {
     boot_state_t a;
     boot_state_t b;
@@ -139,7 +139,7 @@ static void confirm_task(void *parameter)
     vTaskDelay(pdMS_TO_TICKS(5000));
     bl24c512_init();
 
-    if (load_state(&state) && state.phase == BOOT_PHASE_TRIAL &&
+    if (ab_boot_state_load(&state) && state.phase == BOOT_PHASE_TRIAL &&
         state.pending_slot < BOOT_SLOT_COUNT &&
         running_firmware_matches(state.pending_crc32,
                                  state.pending_security_version))

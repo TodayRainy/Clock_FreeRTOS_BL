@@ -1,3 +1,5 @@
 /build/
 /.cache/
 /.keys/
+/.embeddedskills/
+/coscli_output/

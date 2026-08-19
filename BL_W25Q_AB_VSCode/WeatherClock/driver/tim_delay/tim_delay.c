@@ -45,7 +45,7 @@ uint64_t tim_get_us(void)
     return tim_now();
 }
 
-uint64_t cpu_get_ms(void)
+uint64_t tim_get_ms(void)
 {
     return tim_now() / 1000;
 }

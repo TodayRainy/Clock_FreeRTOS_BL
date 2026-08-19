@@ -10,6 +10,8 @@
 - 当前代码架构、状态机、协议与维护指南：[`CODE_GUIDE.md`](CODE_GUIDE.md)
 - 固件签名、看门狗和 DEV/PROD 权限说明：[`SECURE_BOOT_GUIDE.md`](SECURE_BOOT_GUIDE.md)
 - 断点续传协议、掉电边界和实测说明：[`RESUMABLE_UPGRADE_GUIDE.md`](RESUMABLE_UPGRADE_GUIDE.md)
+- COS OTA、后台任务、发布流程和掉电续传说明：[`OTA_GUIDE.md`](OTA_GUIDE.md)
+- `v1.6.6` OTA版本的代码、产物、测试与已知边界：[`RELEASE_NOTES_v1.6.6.md`](RELEASE_NOTES_v1.6.6.md)
 - 设计、测试、使用和 ST-Link 救援说明：[`AB_BOOTLOADER_REPORT.md`](AB_BOOTLOADER_REPORT.md)
 - 初始及最终安全基线：[`SAFETY_BASELINE.md`](SAFETY_BASELINE.md)
 
@@ -23,6 +25,11 @@ Bootloader与应用共用IWDG，Trial只有在核心板级/显示初始化完成
 可人工安装合法签名的旧版本，但不会降低下限。PROD的原始维护命令也要求KEY2。
 外部槽上传默认按4 KiB CRC扫描已写数据，从安全断点继续；旧Bootloader不支持
 新命令时自动回退完整升级，用户也可以显式选择强制完整重写。
+
+WeatherClock还支持从腾讯云COS检查签名XBIN：自动任务在联网60秒后首次检查，
+以后每24小时检查一次；发现新版本时直接下载、校验并暂存到非活动槽，但不会
+自动复位。USART1输入`u`可立即执行同样流程。OTA下载每32 KiB保存一次进度，
+完成后三颗板载LED常亮，用户按RESET才由Bootloader重新验签并安装。
 
 常用命令：
 
@@ -66,6 +73,11 @@ dotnet .\SerialUpgrader\bin\Release\net8.0-windows\SerialUpgrader.dll `
 当前实板已完成v3签名升级、伪造签名拒绝、Trial自动回退、DEV/PROD权限、IWDG
 持续运行以及11.9%/51.7%/96.7%三次传输中断恢复测试；板载最终状态与可恢复的
 512 KiB镜像记录在`SAFETY_BASELINE.md`。
+
+最新OTA实板版本为`v1.6.6-ota-resume-test`。326,564字节XBIN已完成从零下载、
+36,864字节检查点掉电续传、摘要校验、复位安装和Trial确认；当前HTTPS正文使用
+921600波特率及1024字节`CIPRECVDATA`分块，续传段实测约28 KiB/s。对应发布
+清单保存在`ota/manifest.json`，详细数据见`RELEASE_NOTES_v1.6.6.md`。
 
 每个配置的 ELF、HEX、BIN 和 XBIN 位于 `build/debug` 或 `build/release`，不会
 相互覆盖。应用仍必须通过 XBIN/A-B 流程安装；不要把裸应用 BIN 当作正常升级包。

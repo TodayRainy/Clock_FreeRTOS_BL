@@ -7,6 +7,16 @@
 #include "console.h"
 #include "rtc.h"
 #include "aht20.h"
+#include "board.h"
+#include "led_desc.h"
+
+/* 三颗板载 LED 均为低电平点亮。 */
+static struct led_desc board_led1 = { GPIOE, GPIO_Pin_9, Bit_RESET, Bit_SET };
+static struct led_desc board_led2 = { GPIOB, GPIO_Pin_0, Bit_RESET, Bit_SET };
+static struct led_desc board_led3 = { GPIOB, GPIO_Pin_1, Bit_RESET, Bit_SET };
+led_desc_t led1 = &board_led1;
+led_desc_t led2 = &board_led2;
+led_desc_t led3 = &board_led3;
 
 void board_lowlevel_init(void)
 {

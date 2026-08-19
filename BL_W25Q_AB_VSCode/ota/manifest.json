@@ -1,0 +1,14 @@
+{
+  "manifest_version": 1,
+  "product": "clock-f407",
+  "channel": "stable",
+  "firmware_version": "v1.6.6-ota-resume-test",
+  "security_version": 1,
+  "xbin_format_version": 2,
+  "xbin_size": 326564,
+  "xbin_sha256": "C1DB903C5A016FE6F73F3A4A2995100904C2A815101C5F6F6085360EB10CB4C9",
+  "payload_size": 322468,
+  "payload_crc32": "33933CF0",
+  "payload_sha256": "196FD4DDD5C7565DA9211C5327EE985D8A371D0911A36F7C62F2C45B16E831E3",
+  "download_url": "https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/releases/weatherclock-v1.6.6-ota-resume-test.xbin"
+}

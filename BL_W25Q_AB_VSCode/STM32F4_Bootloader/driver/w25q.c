@@ -15,6 +15,8 @@
 #define W25Q_CS_PORT       GPIOE
 #define W25Q_A_CS_PIN      GPIO_Pin_13
 #define W25Q_B_CS_PIN      GPIO_Pin_14
+#define TF_CS_PORT         GPIOA
+#define TF_CS_PIN          GPIO_Pin_15
 
 #define W25Q_RX_DMA_STREAM DMA2_Stream0
 #define W25Q_TX_DMA_STREAM DMA2_Stream3
@@ -197,6 +199,19 @@ void w25q_init(void)
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA | RCC_AHB1Periph_GPIOE |
                            RCC_AHB1Periph_DMA2, ENABLE);
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_SPI1, ENABLE);
+
+    /*
+     * 三个SPI1从设备先全部取消片选。TF卡与两颗W25Q共享PA5/PA6/PA7，
+     * OTA访问外部Flash时必须让PA15保持高电平，避免卡座同时驱动MISO。
+     */
+    GPIO_SetBits(TF_CS_PORT, TF_CS_PIN);
+    GPIO_StructInit(&gpio);
+    gpio.GPIO_Pin = TF_CS_PIN;
+    gpio.GPIO_Mode = GPIO_Mode_OUT;
+    gpio.GPIO_OType = GPIO_OType_PP;
+    gpio.GPIO_PuPd = GPIO_PuPd_UP;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    GPIO_Init(TF_CS_PORT, &gpio);
 
     /* 先把输出锁存器置高，再把 PE13/PE14 切成输出，避免产生误选脉冲。 */
     GPIO_SetBits(W25Q_CS_PORT, W25Q_A_CS_PIN | W25Q_B_CS_PIN);

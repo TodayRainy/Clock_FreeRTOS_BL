@@ -27,6 +27,13 @@ if(NOT FIRMWARE_SECURITY_VERSION MATCHES "^[0-9]+$" OR
     message(FATAL_ERROR "FIRMWARE_SECURITY_VERSION must be a uint32 decimal value")
 endif()
 
+# APP_VERSION 与 XBIN Header 共用同一字符串，串口日志和 OTA 比较不会漂移。
+set(WEATHERCLOCK_VERSION "v1.5.0-ota-bootstrap" CACHE STRING
+    "WeatherClock display version stored in the signed XBIN header")
+if(WEATHERCLOCK_VERSION STREQUAL "" OR WEATHERCLOCK_VERSION MATCHES "[^ -~]")
+    message(FATAL_ERROR "WEATHERCLOCK_VERSION must be non-empty printable ASCII")
+endif()
+
 find_program(FIRMWARE_OPENSSL_EXECUTABLE
     NAMES openssl
     HINTS
@@ -178,6 +185,19 @@ add_custom_target(test_firmware_security_policy
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         VERBATIM
     )
+    add_custom_target(test_ota_contract
+        COMMAND ${CMAKE_COMMAND} -E make_directory .cache
+        COMMAND ${HOST_GCC_EXECUTABLE}
+                -std=c11 -O2 -Wall -Wextra
+                -Ishared -ISTM32F4_Bootloader/third_lib/crc
+                tools/test_ota_contract.c
+                STM32F4_Bootloader/third_lib/crc/crc32.c
+                -o .cache/test_ota_contract${_HOST_EXECUTABLE_SUFFIX}
+        COMMAND .cache/test_ota_contract${_HOST_EXECUTABLE_SUFFIX}
+        COMMENT "Testing OTA EEPROM binary contract with native C"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        VERBATIM
+    )
 else()
     # 固件本身仍可正常构建；只有额外的同源C密码学自测需要宿主机GCC。
     add_custom_target(test_firmware_crypto_c
@@ -188,6 +208,10 @@ else()
     add_custom_target(test_firmware_security_policy
         COMMAND ${CMAKE_COMMAND} -E echo
                 "Host GCC not found; native anti-rollback policy test skipped"
+    )
+    add_custom_target(test_ota_contract
+        COMMAND ${CMAKE_COMMAND} -E echo
+                "Host GCC not found; native OTA contract test skipped"
     )
 endif()
 
@@ -209,6 +233,6 @@ add_custom_target(test_firmware_security
             --openssl ${FIRMWARE_OPENSSL_EXECUTABLE}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DEPENDS test_firmware_crypto_c test_firmware_security_policy
-            test_resume_algorithm
+            test_resume_algorithm test_ota_contract
     COMMENT "Testing rejection of forged signed firmware"
 )

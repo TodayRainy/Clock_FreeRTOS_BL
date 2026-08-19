@@ -18,6 +18,7 @@ set(BOOTLOADER_SOURCES
     app/firmware_auth.c
     app/firmware_slot.c
     app/magic_header.c
+    app/ota_request.c
     app/gcc/jumpapp.s
     driver/bl24c512.c
     driver/bl_usart.c

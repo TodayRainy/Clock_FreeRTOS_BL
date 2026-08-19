@@ -12,10 +12,9 @@
 #include "wifi.h"
 #include "page.h"
 #include "ab_confirm.h"
+#include "board.h"
 #include "health_monitor.h"
-
-extern void board_lowlevel_init(void);
-extern void board_init(void);
+#include "ota.h"
 
 static void main_init(void *param)
 {
@@ -33,6 +32,7 @@ static void main_init(void *param)
     
     main_page_display();
     app_init();
+    ota_start();
     
     vTaskDelete(NULL);
 }

@@ -19,6 +19,7 @@
 #include "boot_state.h"
 #include "firmware_slot.h"
 #include "magic_header.h"
+#include "ota_request.h"
 #include "bootloader.h"
 
 #define LOG_TAG    "boot"
@@ -371,6 +372,8 @@ void bootloader_main(void)
     entered_by_key = key_trap_requested();
     boot_protocol_set_maintenance_unlocked(entered_by_key);
     stay_in_bootloader = entered_by_key;
+    if (!entered_by_key)
+        ota_request_process();
     if (!stay_in_bootloader && !boot_transition_pending())
         stay_in_bootloader = serial_trap_requested();
 

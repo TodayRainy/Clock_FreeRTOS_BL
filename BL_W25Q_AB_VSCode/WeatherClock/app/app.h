@@ -1,7 +1,9 @@
 #ifndef __APP_H__
 #define __APP_H__
 
-#define APP_VERSION "v1.4-ab"
+#ifndef APP_VERSION
+#define APP_VERSION "v1.5.0-ota"
+#endif
 
 void app_init(void);
 
