@@ -1,6 +1,6 @@
 # BL_W25Q_AB_VSCode 代码说明
 
-本文面向后续维护者，说明 `v2.1.0-ab-fast-spidma` 的代码边界、数据格式、
+本文面向后续维护者，说明 `v3.0.0-signed-dev/prod` 的代码边界、数据格式、
 启动状态机、升级协议、掉电恢复顺序以及 VS Code/CMake/GCC/J-Link 工作流。
 设计验证记录和历次性能数据分别见 `AB_BOOTLOADER_REPORT.md`、
 `TRANSFER_OPTIMIZATION_REPORT.md` 与 `SAFETY_BASELINE.md`。
@@ -14,7 +14,7 @@ STM32F407 内部 Flash 中只运行一份天气时钟应用。两颗板载 W25Q1
 一次正常升级遵守三个边界：
 
 1. 上位机只擦写非活动外部槽，不直接覆盖当前内部应用；
-2. 新槽完成整包 CRC32 后，Bootloader 才把它提交为待安装固件；
+2. 新槽完成ECDSA验签及整包CRC32/SHA-256后，Bootloader才提交待安装固件；
 3. 安装到内部 Flash 时先让内部 Header 失效，最后才写回有效 Header。
 
 因此，传输、外部写入或内部安装中断都不会把半成品当作可启动应用。Bootloader
@@ -32,7 +32,9 @@ STM32F407 内部 Flash 中只运行一份天气时钟应用。两颗板载 W25Q1
 | `SerialUpgrader/` | C# GUI/CLI 上位机和 XBIN 解析 |
 | `cmake/` | GCC 工具链、链接脚本和通用段布局 |
 | `.vscode/` | 构建、升级、J-Link 下载和 GDB 调试任务 |
-| `tools/validate_images.py` | 构建后检查向量表、地址边界和 XBIN 双 CRC |
+| `tools/firmware_crypto.py` | P-256密钥、公钥Header及XBIN签名公共工具 |
+| `tools/validate_images.py` | 检查向量表、地址边界、摘要、公钥ID和XBIN签名 |
+| `tools/test_firmware_security.py` | 构造篡改镜像并验证拒绝路径 |
 | `tools/jlink/` | 下载、只读检查、备份与硬救援脚本 |
 
 阅读代码时建议按以下顺序：
@@ -105,6 +107,10 @@ EEPROM 中保存两份 128 字节 `boot_state_t`：
 校验两页的格式和 CRC32，选择 `sequence` 较大的有效记录。正在写的新页掉电时，
 旧页仍保留上一条完整状态。
 
+BCR还保存已确认的`minimum_security_version`和当前候选的
+`pending_security_version`。旧BCR对应字节为`0xFFFFFFFF`，加载后按0迁移，
+记录总大小和两份地址均没有变化。
+
 ## 5. XBIN 格式
 
 `WeatherClock/scripts/gen_magic_header.py` 把应用 BIN 包装为 XBIN：
@@ -113,22 +119,30 @@ EEPROM 中保存两份 128 字节 `boot_state_t`：
 XBIN = 4096 字节 Header 区 + 原始应用 BIN
 ```
 
-`magic_header_t` 固定为 256 字节，重要字段如下：
+`magic_header_t` 固定为256字节。v2保留原数据字段偏移，并加入以下安全字段：
 
 | 字段 | 当前要求 |
 | --- | --- |
-| `magic` | `0x4D414749`，小端内存显示为 `MAGI` |
+| `magic` | `0x4D414749`，小端内存显示为`MAGI` |
+| `format_version/header_size` | `2 / 256` |
+| `hash_algorithm` | `1`，SHA-256 |
+| `signature_algorithm` | `1`，ECDSA-P256/SHA-256 |
+| `key_id` | 内置公钥坐标SHA-256前4字节的标识 |
+| `security_version` | 独立防降级计数，位于偏移24并受签名保护 |
 | `data_type` | `1`，应用固件 |
 | `data_offset` | `4096` |
 | `data_address` | `0x08010000` |
 | `data_length` | 应用 BIN 实际长度，最大 `0x70000` |
 | `data_crc32` | 标准 IEEE CRC32，覆盖应用数据 |
-| `version` | 128 字节 ASCII 版本字符串 |
+| `image_sha256` | 应用数据SHA-256 |
+| `version` | 64字节ASCII版本字符串 |
+| `signature` | 64字节原始`r || s`签名 |
 | `this_address` | `0x0800C000` |
 | `this_crc32` | 覆盖 Header 前 252 字节 |
 
-`magic_header_validate_data()` 先校验 Header CRC，再校验所有会决定内部擦除范围
-的字段。未经该函数通过的地址和长度不能用于 Flash 擦写。
+`magic_header_validate_data()`校验Header CRC及所有决定内部擦除范围的字段，
+`firmware_authenticate_header()`再使用构建时固化的公钥验签。两者均通过后才允许
+扫描或擦写镜像。完整格式和签名规范见`SECURE_BOOT_GUIDE.md`。
 
 ## 6. Bootloader 启动流程
 
@@ -199,11 +213,11 @@ Normal
 
 `firmware_slot_install()` 的固定顺序是：
 
-1. 调用前，外部目标槽已经完成 Header 和数据全量 CRC；
+1. 调用前，外部目标槽已完成Header、ECDSA、CRC32、SHA-256和向量表校验；
 2. 先擦除内部 `0x0800C000` Header 区；
 3. 擦除并从 W25Q 复制应用数据到 `0x08010000`；
-4. 对内部应用重新计算 CRC32；
-5. CRC 正确后，最后写入 256 字节有效 Header；
+4. 对内部应用重新计算CRC32/SHA-256并检查向量表；
+5. 全部正确后，最后写入256字节有效Header；
 6. 再校验内部 Header，才报告安装成功。
 
 第 2 步之后发生任何中断，内部 Header 都是无效的。下次启动不会跳进半成品，
@@ -212,20 +226,21 @@ Normal
 
 ## 9. 应用试运行确认
 
-`WeatherClock/app/ab_confirm.c` 是应用侧唯一需要理解 BCR 的模块。
+`WeatherClock/app/ab_confirm.c`是应用侧唯一需要理解BCR的模块；
+`health_monitor.c`负责IWDG和核心启动健康信号。
 
-FreeRTOS 调度器启动后创建 `ab confirm` 任务。任务等待 5 秒，说明调度器和基本
-任务已经稳定运行，然后：
+应用启动IWDG后给予核心初始化20秒宽限。`board_init()`、`ui_init()`和欢迎页显示
+成功后报告ready；Wi-Fi和互联网不作为固件可启动条件。确认任务等到ready后再
+观察调度器稳定运行5秒，然后：
 
 1. 读取并校验两份 BCR；
 2. 确认当前阶段为 `Trial`；
-3. 校验内部 Header CRC，并确认其 `data_crc32` 等于 `pending_crc32`；
+3. 校验内部 Header CRC，并确认其CRC和安全版本均等于BCR pending字段；
 4. 将 pending 槽提升为 active 槽；
-5. 清空 pending 和尝试次数，交替写入新的 `Normal` BCR。
+5. 以`max(旧下限, pending版本)`更新下限，再清空pending并写入`Normal` BCR。
 
-网络连接不参与确认，避免临时断网导致健康固件被错误回退。如果未来需要更严格
-的健康标准，应在这里增加真实且稳定的应用自检，而不是在 Bootloader 中等待
-网络或传感器。
+如果20秒仍未ready，监控任务停止喂狗，IWDG复位后由Trial次数决定重试或回退。
+DEV调试暂停CPU时冻结IWDG；PROD运行不启用调试冻结。
 
 ## 10. 串口协议
 
@@ -259,9 +274,12 @@ ACK，再切换 USART；上位机切换后用版本查询复核链路。
 | `0x52` | SLOT_ACTIVATE | 全量校验新槽并提交 InstallPending |
 | `0x53` | SLOT_SNAPSHOT | 首次部署时快照当前内部固件 |
 | `0x54` | SLOT_STATUS_FAST | 只返回 17 字节 BCR，供升级选槽 |
+| `0x55` | SECURITY_STATUS | 返回安全版本下限、pending版本和KEY2授权状态 |
 | `0x81..0x83` | 旧内部命令 | 兼容维护；Bootloader 区禁止擦写 |
 
-错误码区分未知命令、溢出、超时、帧格式、校验和参数错误。所有改变持久化状态
+错误码还包含`DENIED`。DEV构建开放工程维护命令；PROD只有长按KEY2进入时开放
+W25/EEPROM原始访问、手工槽维护和旧内部Flash命令。正常签名升级不受影响。
+所有改变持久化状态
 的命令都在返回 OK 前完成必要的状态保存或设置明确的后续恢复阶段。
 
 ## 11. 2 Mbps 信用 ACK 流水
@@ -312,14 +330,15 @@ W25Q 连续读取的命令和 24 位地址仍由 CPU 发送；数据阶段同时
 6. 先发送 XBIN 的 256 字节之后内容；
 7. 最后写入前 256 字节有效 Header；
 8. `SLOT_ACTIVATE` 携带槽号和上位机解析出的数据 CRC；
-9. Bootloader 全量校验、保存 `InstallPending` 并复位。
+9. Bootloader全量验签并检查安全版本；正常降级返回`DENIED`；
+10. 保存`InstallPending`和pending安全版本并复位。
 
 先写主体、最后写 Header 意味着上传进程被终止时，目标槽保持
 `header=false`，不会成为可安装镜像。
 
 ## 14. CMake 构建与产物
 
-需要 CMake、Ninja、Python 3、GNU Arm Embedded Toolchain 和 .NET 8。
+需要CMake、Ninja、Python 3、OpenSSL、GNU Arm Embedded Toolchain和.NET 8。
 
 ```powershell
 cmake --preset debug
@@ -327,6 +346,8 @@ cmake --build --preset validate-debug --parallel
 
 cmake --preset release
 cmake --build --preset validate-release --parallel
+
+cmake --build --preset security-test-release --parallel
 
 dotnet build .\SerialUpgrader\SerialUpgrader.csproj -c Release
 ```
@@ -339,13 +360,17 @@ WeatherClock/stm32f407.elf/.hex/.bin
 WeatherClock/stm32f407_upgrade.xbin
 ```
 
-`validate_images.py` 会检查：
+`validate_images.py`会检查：
 
 - Bootloader 和应用是否超出各自链接区；
 - 初始 MSP 是否位于 SRAM 且满足对齐；
 - Reset_Handler 是否是 Thumb 地址并落在镜像内；
-- XBIN Header 字段、Header CRC 和应用 CRC；
+- XBIN v2字段、Header CRC、应用CRC32和SHA-256；
+- 公钥ID和ECDSA-P256签名；
 - XBIN Payload 是否与刚构建的应用 BIN 逐字节相同。
+
+DEV预设会自动创建被Git忽略的本机密钥；PROD预设必须显式提供外部公私钥。密钥
+管理、迁移顺序和负向测试详见`SECURE_BOOT_GUIDE.md`。
 
 ## 15. VS Code 和 J-Link
 
@@ -387,7 +412,7 @@ SHA256 62687A3225954BCAFA13DC741CFC8CAB2D4ED46120CAF3C36818C01B9D1BCE1D
 
 以下内容不能在单一模块中孤立修改：
 
-- `magic_header_t` 字段、大小、地址和 CRC 覆盖范围；
+- `magic_header_t`字段、大小、签名规范、地址和CRC覆盖范围；
 - `boot_state_t` 字段顺序、128 字节大小、EEPROM 地址和 CRC 覆盖范围；
 - Bootloader/app 链接地址与 XBIN 生成脚本；
 - 协议 MTU、主机拆包上限和 USART3 DMA 缓冲容量；
@@ -404,18 +429,23 @@ SHA256 62687A3225954BCAFA13DC741CFC8CAB2D4ED46120CAF3C36818C01B9D1BCE1D
 6. 跳转后 USART3、SPI1 和 DMA 无 Bootloader 遗留使能；
 7. J-Link 仍能连接、下载和验证救援镜像。
 
+涉及签名或Header的改动还必须运行`security-test-release`，确认同源C验签和四类
+篡改镜像拒绝测试全部通过。
+
 ## 18. 当前版本实测基线
 
 | 项目 | 结果 |
 | --- | ---: |
-| Bootloader 版本 | `v2.1.0-ab-fast-spidma` |
-| Release Flash | 21,780 / 49,152 字节，44.31% |
-| Release RAM | 35,608 / 131,072 字节，27.17% |
-| 应用 Payload | 308,332 字节 |
+| Bootloader版本 | `v3.2.0-antirob-dev/prod` |
+| Release Flash（DEV） | 27,856 / 49,152字节，56.67% |
+| Release RAM | 35,624 / 131,072 字节，27.18% |
+| 应用Payload | 308,868字节 |
 | 2 Mbps 传输及 W25 编程 | 2.86 秒 |
 | 完整升级含握手 | 4.46～4.49 秒 |
 | 升级前快速状态 | 0.02 秒 |
 | 单槽完整校验与提交 | 0.19 秒 |
-| 最终 BCR | `Normal / active=A / pending=none / sequence=123` |
-| 最终 Slot A/B | `v1.4.0-260818-1913-ab`，CRC `0x98A25921`，完整有效 |
+| 最终 BCR | `Normal / active=A / pending=none / security=1/0 / sequence=171` |
+| 最终 Slot A/B | `v1.4.0-260819-1310-ab`，CRC `0x45A5024D`，完整有效 |
 
+防降级迁移、正常拒绝、人工授权和双槽恢复已在实板完成；详细边界与测试方式见
+`SECURE_BOOT_GUIDE.md`。

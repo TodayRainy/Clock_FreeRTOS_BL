@@ -50,7 +50,9 @@ typedef struct
     uint8_t attempts_left;   /**< Trial 阶段剩余启动次数。 */
     uint32_t active_crc32;   /**< active_slot 中应用数据的 CRC32。 */
     uint32_t pending_crc32;  /**< pending_slot 中应用数据的 CRC32。 */
-    uint8_t reserved[104];   /**< 保留空间，保持记录为一个128字节页。 */
+    uint32_t minimum_security_version; /**< 已确认固件形成的防降级下限。 */
+    uint32_t pending_security_version; /**< 当前安装/Trial候选的安全版本。 */
+    uint8_t reserved[96];    /**< 保留空间，保持记录为一个128字节页。 */
     uint32_t record_crc32;   /**< 本字段之前所有字节的 CRC32。 */
 } boot_state_t;
 

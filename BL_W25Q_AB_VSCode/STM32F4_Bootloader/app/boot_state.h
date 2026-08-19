@@ -18,6 +18,7 @@ void boot_state_default(boot_state_t *state);
  * @brief 从 EEPROM 双副本中读取最新的有效状态。
  *
  * @param[out] state 成功时接收最新记录；没有有效记录时接收默认状态。
+ * 旧版记录保留区中的0xFFFFFFFF安全版本会在RAM中迁移为0。
  * @return 找到至少一份通过格式和 CRC32 校验的记录时返回 true。
  */
 bool boot_state_load(boot_state_t *state);

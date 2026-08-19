@@ -4,10 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import struct
 import sys
 import zlib
 from pathlib import Path
+
+from firmware_crypto import public_key_id, public_point, verify_header
 
 
 BOOT_BASE = 0x08000000
@@ -18,6 +21,8 @@ SRAM_BASE = 0x20000000
 SRAM_LIMIT = 0x20020000
 XBIN_HEADER_SIZE = 4096
 XBIN_MAGIC = 0x4D414749
+XBIN_FORMAT_VERSION = 2
+XBIN_STRUCT_SIZE = 256
 
 
 def validate_vector(image: bytes, base: int, limit: int, name: str) -> None:
@@ -40,19 +45,27 @@ def validate_vector(image: bytes, base: int, limit: int, name: str) -> None:
     )
 
 
-def validate_xbin(xbin: bytes, app: bytes) -> None:
-    """Validate header layout, header CRC and application CRC of an XBIN."""
+def validate_xbin(xbin: bytes, app: bytes, openssl: Path, public_key: Path) -> None:
+    """Validate XBIN v2 layout, both digests and its ECDSA-P256 signature."""
     if len(xbin) < XBIN_HEADER_SIZE:
         raise ValueError("XBIN: file is shorter than its 4096-byte header")
 
-    magic, data_type, data_offset, data_address, data_length, data_crc = struct.unpack_from(
-        "<I28xIIIII", xbin, 0
+    (magic, format_version, header_size, hash_algorithm,
+     signature_algorithm, key_id) = struct.unpack_from("<IIIIII", xbin, 0)
+    security_version = struct.unpack_from("<I", xbin, 24)[0]
+    data_type, data_offset, data_address, data_length, data_crc = struct.unpack_from(
+        "<IIIII", xbin, 32
     )
+    image_sha256 = xbin[52:84]
     this_address, header_crc = struct.unpack_from("<II", xbin, 248)
-    version = xbin[96:224].split(b"\0", 1)[0].decode("ascii")
+    version = xbin[96:160].split(b"\0", 1)[0].decode("ascii")
+    signature = xbin[160:224]
 
     if magic != XBIN_MAGIC:
         raise ValueError(f"XBIN: bad magic 0x{magic:08X}")
+    if (format_version != XBIN_FORMAT_VERSION or header_size != XBIN_STRUCT_SIZE or
+            hash_algorithm != 1 or signature_algorithm != 1):
+        raise ValueError("XBIN: unsupported signed image format or algorithm")
     if data_type != 1 or data_offset != XBIN_HEADER_SIZE or data_address != APP_BASE:
         raise ValueError("XBIN: type, data offset or application address violates the contract")
     if this_address != BOOT_LIMIT:
@@ -65,10 +78,19 @@ def validate_xbin(xbin: bytes, app: bytes) -> None:
         raise ValueError("XBIN: header CRC32 mismatch")
     if zlib.crc32(app) & 0xFFFFFFFF != data_crc:
         raise ValueError("XBIN: application CRC32 mismatch")
+    if hashlib.sha256(app).digest() != image_sha256:
+        raise ValueError("XBIN: application SHA-256 mismatch")
+
+    point = public_point(openssl, public_key)
+    if key_id != public_key_id(point):
+        raise ValueError("XBIN: key ID does not match the configured public key")
+    if not verify_header(openssl, public_key, xbin[:XBIN_STRUCT_SIZE], signature):
+        raise ValueError("XBIN: ECDSA-P256 signature mismatch")
 
     print(
-        f"XBIN: version={version}, payload={data_length} bytes, "
-        f"data CRC=0x{data_crc:08X}, header CRC=0x{header_crc:08X}"
+        f"XBIN: version={version}, security={security_version}, payload={data_length} bytes, "
+        f"key=0x{key_id:08X}, data CRC=0x{data_crc:08X}, "
+        f"SHA-256={image_sha256.hex().upper()}"
     )
 
 
@@ -77,6 +99,8 @@ def main() -> int:
     parser.add_argument("bootloader", type=Path)
     parser.add_argument("application", type=Path)
     parser.add_argument("xbin", type=Path)
+    parser.add_argument("public_key", type=Path)
+    parser.add_argument("--openssl", required=True, type=Path)
     args = parser.parse_args()
 
     try:
@@ -85,7 +109,7 @@ def main() -> int:
         xbin = args.xbin.read_bytes()
         validate_vector(boot, BOOT_BASE, BOOT_LIMIT, "Bootloader")
         validate_vector(app, APP_BASE, APP_LIMIT, "WeatherClock")
-        validate_xbin(xbin, app)
+        validate_xbin(xbin, app, args.openssl, args.public_key)
     except (OSError, UnicodeError, ValueError) as error:
         print(f"Validation failed: {error}", file=sys.stderr)
         return 1

@@ -15,6 +15,7 @@ set(BOOTLOADER_SOURCES
     app/boot_state.c
     app/bootloader.c
     app/boot_protocol.c
+    app/firmware_auth.c
     app/firmware_slot.c
     app/magic_header.c
     app/gcc/jumpapp.s
@@ -30,6 +31,9 @@ set(BOOTLOADER_SOURCES
     firmware/cmsis/device/system_stm32f4xx.c
     third_lib/crc/crc16.c
     third_lib/crc/crc32.c
+    third_lib/sha256/sha256.c
+    third_lib/micro-ecc/uECC.c
+    ${CMAKE_SOURCE_DIR}/shared/watchdog.c
     third_lib/easylogger/elog.c
     third_lib/easylogger/elog_port.c
     third_lib/easylogger/elog_utils.c
@@ -53,13 +57,25 @@ target_compile_definitions(bootloader PRIVATE
     STM32F40_41xxx
     USE_STDPERIPH_DRIVER
     HSE_VALUE=8000000
+    ${FIRMWARE_PROFILE_DEFINITION}
+    uECC_SUPPORTS_secp160r1=0
+    uECC_SUPPORTS_secp192r1=0
+    uECC_SUPPORTS_secp224r1=0
+    uECC_SUPPORTS_secp256r1=1
+    uECC_SUPPORTS_secp256k1=0
+    uECC_OPTIMIZATION_LEVEL=2
+    uECC_SQUARE_FUNC=0
 )
 
 target_include_directories(bootloader PRIVATE
     app
     driver
     third_lib/crc
+    third_lib/sha256
+    third_lib/micro-ecc
     third_lib/easylogger
+    ${FIRMWARE_GENERATED_DIR}
+    ${CMAKE_SOURCE_DIR}/shared
     firmware/cmsis/core
     firmware/cmsis/device
     firmware/driver/inc

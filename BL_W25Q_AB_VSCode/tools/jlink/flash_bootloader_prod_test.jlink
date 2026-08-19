@@ -1,0 +1,7 @@
+r
+h
+loadbin build/release-prod/STM32F4_Bootloader/stm32f407.bin, 0x08000000
+verifybin build/release-prod/STM32F4_Bootloader/stm32f407.bin, 0x08000000
+r
+g
+q

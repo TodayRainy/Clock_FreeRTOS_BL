@@ -62,6 +62,12 @@ void vAssertCalled(const char *file, int line)
 {
     portDISABLE_INTERRUPTS();
     printf("Assert Called: %s(%d)\n", file, line);
+
+    /* 断言后禁止继续执行；保持不喂狗，由IWDG完成系统复位。 */
+    while (1)
+    {
+        ;
+    }
 }
 
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)

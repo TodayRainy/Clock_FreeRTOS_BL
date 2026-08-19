@@ -1,3 +1,8 @@
+/**
+ * @file ab_confirm.c
+ * @brief WeatherClock把通过健康观察期的Trial固件提交为Normal。
+ */
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -7,8 +12,10 @@
 #include "task.h"
 #include "bl24c512.h"
 #include "ab_confirm.h"
+#include "health_monitor.h"
 #include "../../shared/ab_boot_contract.h"
 #include "../../shared/firmware_image_format.h"
+#include "../../shared/firmware_security_policy.h"
 
 #ifndef AB_CONFIRM_ENABLED
 #define AB_CONFIRM_ENABLED 1
@@ -60,6 +67,11 @@ static bool load_state(boot_state_t *state)
 
     if (!av && !bv) return false;
     *state = av && (!bv || a.sequence >= b.sequence) ? a : b;
+    /* v3.1及更早的BCR把新增字段留为EEPROM擦除值。 */
+    if (state->minimum_security_version == UINT32_MAX)
+        state->minimum_security_version = 0;
+    if (state->pending_security_version == UINT32_MAX)
+        state->pending_security_version = 0;
     return true;
 }
 
@@ -83,14 +95,19 @@ static bool save_state(boot_state_t *state)
 /**
  * @brief 确认当前运行固件就是BCR中记录的pending固件。
  *
- * Bootloader在跳转前已经做过应用全量CRC32。应用端只复核带CRC保护的Header
- * 及其中的固件CRC标识，避免再次扫描整个内部Flash。
+ * Bootloader在跳转前已经完成SHA-256、ECDSA签名和CRC32验证。应用端只复核
+ * 带CRC保护的v2 Header及其中的固件CRC标识，避免再次扫描整个内部Flash。
  */
-static bool running_firmware_matches(uint32_t expected_crc32)
+static bool running_firmware_matches(uint32_t expected_crc32,
+                                     uint32_t expected_security_version)
 {
     const magic_header_t *header = (const magic_header_t *)MAGIC_HEADER_ADDR;
 
     if (header->magic != MAGIC_HEADER_MAGIC ||
+        header->format_version != MAGIC_HEADER_FORMAT_V2 ||
+        header->header_size != MAGIC_HEADER_SIZE ||
+        header->hash_algorithm != MAGIC_HASH_SHA256 ||
+        header->signature_algorithm != MAGIC_SIGNATURE_ECDSA_P256_SHA256 ||
         header->data_type != MAGIC_HEADER_TYPE_APP ||
         header->data_offset != MAGIC_HEADER_AREA_SIZE ||
         header->data_address != MAGIC_DATA_ADDRESS ||
@@ -101,35 +118,46 @@ static bool running_firmware_matches(uint32_t expected_crc32)
     if (calculate_crc32((const uint8_t *)header,
                         offsetof(magic_header_t, this_crc32)) != header->this_crc32)
         return false;
-    return header->data_crc32 == expected_crc32;
+    return header->data_crc32 == expected_crc32 &&
+           header->security_version == expected_security_version;
 }
 
 /**
  * @brief FreeRTOS试运行确认任务。
  *
- * 调度器稳定运行5秒后，把Trial原子地提交为Normal。网络状态不参与确认，
- * 避免临时断网被误判为固件启动失败。
+ * 先等待主初始化任务报告板级设备和基本显示路径正常，再观察调度器稳定运行
+ * 5秒，最后把Trial原子地提交为Normal。网络状态不参与确认，避免临时断网
+ * 被误判为固件启动失败。
  */
 static void confirm_task(void *parameter)
 {
     boot_state_t state;
 
     (void)parameter;
+    while (!health_monitor_is_ready())
+        vTaskDelay(pdMS_TO_TICKS(100));
     vTaskDelay(pdMS_TO_TICKS(5000));
     bl24c512_init();
 
     if (load_state(&state) && state.phase == BOOT_PHASE_TRIAL &&
         state.pending_slot < BOOT_SLOT_COUNT &&
-        running_firmware_matches(state.pending_crc32))
+        running_firmware_matches(state.pending_crc32,
+                                 state.pending_security_version))
     {
         state.phase = BOOT_PHASE_NORMAL;
         state.active_slot = state.pending_slot;
         state.active_crc32 = state.pending_crc32;
+        state.minimum_security_version = firmware_security_floor_after_confirm(
+            state.minimum_security_version, state.pending_security_version);
         state.pending_slot = BOOT_SLOT_NONE;
         state.pending_crc32 = 0;
+        state.pending_security_version = 0;
         state.attempts_left = 0;
-        printf(save_state(&state) ? "[AB] trial firmware confirmed\n" :
-                                   "[AB] confirm write failed\n");
+        if (save_state(&state))
+            printf("[AB] trial firmware confirmed, security floor=%lu\n",
+                   (unsigned long)state.minimum_security_version);
+        else
+            printf("[AB] confirm write failed\n");
     }
     vTaskDelete(NULL);
 }

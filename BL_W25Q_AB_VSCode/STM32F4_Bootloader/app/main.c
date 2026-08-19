@@ -1,7 +1,13 @@
+/**
+ * @file main.c
+ * @brief Bootloader底层初始化和A/B主流程入口。
+ */
+
 #include <stdint.h>
 #include <stdio.h>
 #include "console.h"
 #include "tim_delay.h"
+#include "watchdog.h"
 #include "elog.h"
 #include "bootloader.h"
 
@@ -12,6 +18,7 @@ int main(void)
     board_lowlevel_init();
     console_init();
     tim_delay_init();
+    watchdog_init();
 
 #ifdef ELOG_OUTPUT_ENABLE
     elog_init();

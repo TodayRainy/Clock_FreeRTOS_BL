@@ -25,6 +25,19 @@
       "cacheVariables": {
         "CMAKE_BUILD_TYPE": "Release"
       }
+    },
+    {
+      "name": "release-prod",
+      "displayName": "STM32 Production Release (signed)",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/release-prod",
+      "toolchainFile": "${sourceDir}/cmake/arm-none-eabi-gcc.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "BOOT_SECURITY_PROFILE": "PROD",
+        "FIRMWARE_SIGNING_KEY": "$env{CLOCK_FW_SIGNING_KEY}",
+        "FIRMWARE_VERIFY_KEY": "$env{CLOCK_FW_VERIFY_KEY}"
+      }
     }
   ],
   "buildPresets": [
@@ -64,6 +77,16 @@
     {
       "name": "validate-release",
       "configurePreset": "release",
+      "targets": ["validate_images"]
+    },
+    {
+      "name": "security-test-release",
+      "configurePreset": "release",
+      "targets": ["test_firmware_security"]
+    },
+    {
+      "name": "validate-release-prod",
+      "configurePreset": "release-prod",
       "targets": ["validate_images"]
     }
   ]

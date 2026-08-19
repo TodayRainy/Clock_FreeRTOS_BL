@@ -13,6 +13,7 @@
 #include "boot_protocol.h"
 #include "bl_usart.h"
 #include "tim_delay.h"
+#include "watchdog.h"
 #include "w25q.h"
 #include "bl24c512.h"
 #include "boot_state.h"
@@ -100,7 +101,8 @@ static bool handle_install_pending(boot_state_t *state)
 
     if (state->pending_slot >= BOOT_SLOT_COUNT ||
         !firmware_slot_validate(state->pending_slot, &header) ||
-        header.data_crc32 != state->pending_crc32)
+        header.data_crc32 != state->pending_crc32 ||
+        header.security_version != state->pending_security_version)
         return schedule_rollback(state, "pending slot is invalid");
 
     log_w("installing slot %u", state->pending_slot);
@@ -142,6 +144,7 @@ static bool handle_rollback_pending(boot_state_t *state)
     state->phase = BOOT_PHASE_NORMAL;
     state->pending_slot = BOOT_SLOT_NONE;
     state->pending_crc32 = 0;
+    state->pending_security_version = 0;
     state->attempts_left = 0;
     if (!boot_state_save(state))
     {
@@ -161,12 +164,14 @@ static bool handle_trial(boot_state_t *state)
     magic_header_t pending_header;
 
     if (!firmware_internal_validate(&internal_header) ||
-        internal_header.data_crc32 != state->pending_crc32)
+        internal_header.data_crc32 != state->pending_crc32 ||
+        internal_header.security_version != state->pending_security_version)
     {
         /* 内部半成品可从仍然完整的pending槽重装；pending也损坏则回退。 */
         if (state->pending_slot < BOOT_SLOT_COUNT &&
             firmware_slot_validate(state->pending_slot, &pending_header) &&
-            pending_header.data_crc32 == state->pending_crc32)
+            pending_header.data_crc32 == state->pending_crc32 &&
+            pending_header.security_version == state->pending_security_version)
         {
             log_w("trial image is incomplete; reinstalling pending slot");
             return save_phase_and_reset(state, BOOT_PHASE_INSTALL_PENDING);
@@ -208,6 +213,7 @@ static bool recover_without_state(boot_state_t *state)
         state->phase = BOOT_PHASE_ROLLBACK_PENDING;
         state->active_slot = slot;
         state->active_crc32 = header.data_crc32;
+        state->minimum_security_version = header.security_version;
         if (!boot_state_save(state))
             return false;
         reset_after_state_change();
@@ -229,9 +235,10 @@ static bool boot_prepare_application(void)
     magic_header_t active_header;
     bool state_found = boot_state_load(&state);
 
-    log_i("state=%s phase=%u active=%u pending=%u attempts=%u seq=%u",
+    log_i("state=%s phase=%u active=%u pending=%u attempts=%u seq=%u security=%u/%u",
           state_found ? "valid" : "default", state.phase, state.active_slot,
-          state.pending_slot, state.attempts_left, state.sequence);
+          state.pending_slot, state.attempts_left, state.sequence,
+          state.minimum_security_version, state.pending_security_version);
 
     switch ((boot_phase_t)state.phase)
     {
@@ -343,8 +350,15 @@ static bool key_pressed(void)
 void bootloader_main(void)
 {
     bool stay_in_bootloader;
+    bool entered_by_key;
+    uint32_t reset_flags = RCC->CSR;
 
     log_i("Bootloader started.");
+    if (reset_flags & RCC_CSR_WDGRSTF)
+        log_w("previous reset was caused by IWDG");
+    /* 读取并记录后清除，避免后续普通复位仍被误报为看门狗复位。 */
+    RCC->CSR |= RCC_CSR_RMVF;
+
     key_init(key2);
     boot_protocol_init();
 
@@ -354,7 +368,9 @@ void bootloader_main(void)
     bl24c512_init();
     log_i("BL24C512 %s", bl24c512_is_present() ? "ready" : "not found");
 
-    stay_in_bootloader = key_trap_requested();
+    entered_by_key = key_trap_requested();
+    boot_protocol_set_maintenance_unlocked(entered_by_key);
+    stay_in_bootloader = entered_by_key;
     if (!stay_in_bootloader && !boot_transition_pending())
         stay_in_bootloader = serial_trap_requested();
 
@@ -368,6 +384,8 @@ void bootloader_main(void)
     while (1)
     {
         boot_protocol_action_t action;
+
+        watchdog_refresh();
 
         if (key_pressed())
         {

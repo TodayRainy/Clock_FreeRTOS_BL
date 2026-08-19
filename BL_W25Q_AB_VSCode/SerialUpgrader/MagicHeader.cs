@@ -1,4 +1,5 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace SerialUpgrader;
@@ -8,88 +9,80 @@ public enum MagicHeaderDataType : uint
     Application = 1,
 }
 
+/// <summary>
+/// XBIN v2的固定256字节固件描述头。上位机负责检查结构、CRC32和SHA-256，
+/// Bootloader使用设备内置公钥完成最终ECDSA签名验证。
+/// </summary>
 public class MagicHeader
 {
-    /*
-     * Magic Header C语言定义
-     * 
-     * typedef struct
-     * {
-     *     uint32_t magic;         // 魔数，用于标识这是一个有效的魔术头
-     *     uint32_t bitmask;       // 位掩码，用于标识哪些字段有效
-     *     uint32_t reserved1[6];  // 保留字段，供将来扩展使用
-     * 
-     *     uint32_t data_type;     // 类型，根据type类型选择固件下载位置
-     *     uint32_t data_offset;   // 固件文件相对于magic header的偏移
-     *     uint32_t data_address;  // 固件写入的实际地址
-     *     uint32_t data_length;   // 固件长度
-     *     uint32_t data_crc32;    // 固件的CRC32校验值
-     *     uint32_t reserved2[11]; // 保留字段，供将来扩展使用
-     * 
-     *     char version[128];      // 固件版本字符串
-     * 
-     *     uint32_t reserved3[6];  // 保留字段，供将来扩展使用
-     *     uint32_t this_address;  // 该结构体在存储介质中的实际地址
-     *     uint32_t this_crc32;    // 该结构体本身的CRC32校验值
-     * } magic_header_t;
-     */
+    private const uint CurrentFormatVersion = 2;
+    private const uint HeaderSize = 256;
 
+    public uint FormatVersion { get; private set; }
+    public uint KeyId { get; private set; }
+    public uint SecurityVersion { get; private set; }
     public MagicHeaderDataType DataType { get; private set; }
     public uint DataOffset { get; private set; }
     public uint DataAddress { get; private set; }
     public uint DataLength { get; private set; }
     public uint DataCrc32 { get; private set; }
+    public byte[] ImageSha256 { get; private set; } = [];
     public string Version { get; private set; } = string.Empty;
     public uint ThisAddress { get; private set; }
 
+    /// <summary>
+    /// 解析并检查待发送的XBIN。这里的SHA-256用于尽早发现本地文件损坏；公钥
+    /// 授权判断始终由Bootloader执行，不能由可替换的PC上位机代替。
+    /// </summary>
     public static MagicHeader? Parse(byte[] xbin)
     {
-        if (xbin.Length < 256)
+        if (xbin.Length < HeaderSize)
         {
             Trace.WriteLine("数据长度不足256字节，无法解析头部信息");
             return null;
         }
 
         uint magic = BitConverter.ToUInt32(xbin, 0);
-        if (magic != 0x4D414749) // "MAGI"
+        uint formatVersion = BitConverter.ToUInt32(xbin, 4);
+        uint headerSize = BitConverter.ToUInt32(xbin, 8);
+        uint hashAlgorithm = BitConverter.ToUInt32(xbin, 12);
+        uint signatureAlgorithm = BitConverter.ToUInt32(xbin, 16);
+        uint keyId = BitConverter.ToUInt32(xbin, 20);
+        uint securityVersion = BitConverter.ToUInt32(xbin, 24);
+        uint dataType = BitConverter.ToUInt32(xbin, 32);
+        uint dataOffset = BitConverter.ToUInt32(xbin, 36);
+        uint dataAddress = BitConverter.ToUInt32(xbin, 40);
+        uint dataLength = BitConverter.ToUInt32(xbin, 44);
+        uint dataCrc32 = BitConverter.ToUInt32(xbin, 48);
+        byte[] imageSha256 = xbin[52..84];
+        string version = Encoding.ASCII.GetString(xbin, 96, 64).TrimEnd('\0');
+        ReadOnlySpan<byte> signature = xbin.AsSpan(160, 64);
+        uint thisAddress = BitConverter.ToUInt32(xbin, 248);
+        uint thisCrc32 = BitConverter.ToUInt32(xbin, 252);
+
+        if (magic != 0x4D414749)
         {
             Trace.WriteLine($"无效的头部数据，magic: 0x{magic:X8}");
             return null;
         }
 
-        //uint bitmask = BitConverter.ToUInt32(xbin, 4);
-
-        uint dataType = BitConverter.ToUInt32(xbin, 32);
-
-        uint dataOffset = BitConverter.ToUInt32(xbin, 36);
-
-        uint dataAddress = BitConverter.ToUInt32(xbin, 40);
-
-        uint dataLength = BitConverter.ToUInt32(xbin, 44);
-
-        uint dataCrc32 = BitConverter.ToUInt32(xbin, 48);
-
-        string version = Encoding.ASCII.GetString(xbin, 96, 128).TrimEnd('\0');
-
-        uint thisAddress = BitConverter.ToUInt32(xbin, 248);
-
-        uint thisCrc32 = BitConverter.ToUInt32(xbin, 252);
-
         uint computedCrc32 = CRC.CRC32(xbin[..252]);
-
         if (thisCrc32 != computedCrc32)
         {
             Trace.WriteLine($"头部数据CRC32校验失败，expected: 0x{thisCrc32:X8}, got: 0x{computedCrc32:X8}");
             return null;
         }
 
-        if (dataType != (uint)MagicHeaderDataType.Application ||
+        if (formatVersion != CurrentFormatVersion || headerSize != HeaderSize ||
+            hashAlgorithm != 1 || signatureAlgorithm != 1 ||
+            signature.IndexOfAnyExcept((byte)0) < 0 ||
+            dataType != (uint)MagicHeaderDataType.Application ||
             dataOffset != 4096 || dataAddress != 0x08010000 ||
             dataLength == 0 || dataLength > 0x70000 ||
             thisAddress != 0x0800C000 ||
             dataOffset + dataLength != xbin.Length)
         {
-            Trace.WriteLine("固件头中的类型、地址或长度不符合A/B布局");
+            Trace.WriteLine("签名格式、地址或长度不符合XBIN v2契约");
             return null;
         }
 
@@ -100,15 +93,26 @@ public class MagicHeader
             return null;
         }
 
-        MagicHeader header = new();
-        header.DataType = (MagicHeaderDataType)dataType;
-        header.DataOffset = dataOffset;
-        header.DataAddress = dataAddress;
-        header.DataLength = dataLength;
-        header.DataCrc32 = dataCrc32;
-        header.Version = version;
-        header.ThisAddress = thisAddress;
+        byte[] computedSha256 = SHA256.HashData(xbin.AsSpan((int)dataOffset));
+        if (!computedSha256.SequenceEqual(imageSha256))
+        {
+            Trace.WriteLine("固件数据SHA-256校验失败");
+            return null;
+        }
 
-        return header;
+        return new MagicHeader
+        {
+            FormatVersion = formatVersion,
+            KeyId = keyId,
+            SecurityVersion = securityVersion,
+            DataType = (MagicHeaderDataType)dataType,
+            DataOffset = dataOffset,
+            DataAddress = dataAddress,
+            DataLength = dataLength,
+            DataCrc32 = dataCrc32,
+            ImageSha256 = imageSha256,
+            Version = version,
+            ThisAddress = thisAddress,
+        };
     }
 }

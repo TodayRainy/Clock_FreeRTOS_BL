@@ -16,6 +16,7 @@ set(STM32_SPL_SOURCES
 set(WEATHERCLOCK_SOURCES
     app/main.c
     app/ab_confirm.c
+    app/health_monitor.c
     app/board.c
     app/wifi.c
     app/weather.c
@@ -62,6 +63,7 @@ set(WEATHERCLOCK_SOURCES
     third_lib/freertos/queue.c
     third_lib/freertos/tasks.c
     third_lib/freertos/timers.c
+    ${CMAKE_SOURCE_DIR}/shared/watchdog.c
     third_lib/freertos/portable/heap_4.c
     third_lib/freertos/portable/GCC/ARM_CM4F/port.c
     ${CMAKE_SOURCE_DIR}/cmake/runtime/syscalls.c
@@ -93,6 +95,7 @@ target_compile_definitions(weatherclock PRIVATE
     STM32F40_41xxx
     USE_STDPERIPH_DRIVER
     HSE_VALUE=8000000
+    ${FIRMWARE_PROFILE_DEFINITION}
 )
 
 target_include_directories(weatherclock PRIVATE
@@ -114,6 +117,7 @@ target_include_directories(weatherclock PRIVATE
     third_lib/freertos/include
     third_lib/freertos/portable/GCC/ARM_CM4F
     third_lib/freertos/portable
+    ${CMAKE_SOURCE_DIR}/shared
 )
 
 target_link_libraries(weatherclock PRIVATE
@@ -136,6 +140,10 @@ add_custom_command(TARGET weatherclock POST_BUILD
             ../../../WeatherClock/scripts/gen_magic_header.py
             stm32f407.bin
             stm32f407_upgrade.xbin
+            --private-key ${FIRMWARE_SIGNING_KEY}
+            --public-key ${FIRMWARE_VERIFY_KEY}
+            --openssl ${FIRMWARE_OPENSSL_EXECUTABLE}
+            --security-version ${FIRMWARE_SECURITY_VERSION}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Generating WeatherClock HEX/BIN/XBIN"
 )

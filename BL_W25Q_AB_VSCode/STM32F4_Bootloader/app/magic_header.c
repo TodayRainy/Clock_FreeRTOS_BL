@@ -18,8 +18,12 @@ bool magic_header_validate_data(const magic_header_t *header)
     if (ccrc != header->this_crc32)
         return false;
 
-    /* 这些字段决定内部Flash擦写范围，必须在CRC遍历和擦除之前确认。 */
-    if (header->data_type != MAGIC_HEADER_TYPE_APP ||
+    /* 这些字段决定固件扫描与内部Flash擦写范围，使用前必须全部固定。 */
+    if (header->format_version != MAGIC_HEADER_FORMAT_V2 ||
+        header->header_size != MAGIC_HEADER_SIZE ||
+        header->hash_algorithm != MAGIC_HASH_SHA256 ||
+        header->signature_algorithm != MAGIC_SIGNATURE_ECDSA_P256_SHA256 ||
+        header->data_type != MAGIC_HEADER_TYPE_APP ||
         header->data_offset != MAGIC_HEADER_AREA_SIZE ||
         header->data_address != MAGIC_DATA_ADDRESS ||
         header->data_length == 0 || header->data_length > MAGIC_DATA_MAX_SIZE ||
@@ -27,9 +31,4 @@ bool magic_header_validate_data(const magic_header_t *header)
         return false;
 
     return true;
-}
-
-bool magic_header_validate(void)
-{
-    return magic_header_validate_data((const magic_header_t *)MAGIC_HEADER_ADDR);
 }

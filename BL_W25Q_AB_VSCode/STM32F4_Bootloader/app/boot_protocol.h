@@ -23,6 +23,16 @@ typedef enum
 void boot_protocol_init(void);
 
 /**
+ * @brief 根据启动时的物理按键条件设置工程维护权限。
+ *
+ * DEV构建始终开放维护命令；PROD构建只有持续按住KEY2进入Bootloader时才开放。
+ * 正常签名升级、状态查询、启动和复位命令不受该权限影响。
+ *
+ * @param[in] physical_presence 启动窗口内是否确认了长按KEY2。
+ */
+void boot_protocol_set_maintenance_unlocked(bool physical_presence);
+
+/**
  * @brief 判断协议串口DMA是否已经收到尚未处理的数据。
  *
  * 启动等待窗口使用该函数判断是否应停留在Bootloader。

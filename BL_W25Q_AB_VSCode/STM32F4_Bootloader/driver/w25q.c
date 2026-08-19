@@ -8,6 +8,7 @@
  */
 
 #include "stm32f4xx.h"
+#include "watchdog.h"
 #include "tim_delay.h"
 #include "w25q.h"
 
@@ -158,6 +159,8 @@ static bool wait_ready(w25q_chip_t chip, uint32_t timeout_ms)
 
     while (w25q_read_status1(chip) & 0x01u)
     {
+        /* 64 KiB块擦除可能持续数秒，不能让正常的Flash忙等待触发IWDG。 */
+        watchdog_refresh();
         if (tim_get_ms() - start >= timeout_ms)
             return false;
     }

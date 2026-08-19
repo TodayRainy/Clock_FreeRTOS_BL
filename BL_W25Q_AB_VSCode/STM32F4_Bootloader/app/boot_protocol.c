@@ -21,6 +21,7 @@
 #include "boot_state.h"
 #include "firmware_slot.h"
 #include "magic_header.h"
+#include "firmware_security_policy.h"
 #include "boot_protocol.h"
 #include "crc16.h"
 #include "crc32.h"
@@ -30,8 +31,13 @@
 #define LOG_LVL    ELOG_LVL_INFO
 #include "elog.h"
 
-#define BL_VERSION       "v2.1.0-ab-fast-spidma"
-#define RX_TIMEOUT_MS    20u
+#ifdef FIRMWARE_BUILD_PROFILE_DEV
+#define BL_VERSION       "v3.2.0-antirob-dev"
+#else
+#define BL_VERSION       "v3.2.0-antirob-prod"
+#endif
+#define RX_TIMEOUT_MS              20u
+#define HIGH_SPEED_IDLE_TIMEOUT_MS 2000u
 
 /* 8 KiB固件块加旧PROGRAM命令的8字节参数头。 */
 #define PAYLOAD_SIZE_MAX (8192u + 8u)
@@ -53,7 +59,8 @@
 #define W25_PROGRAM_HEADER_LENGTH     7u
 #define EEPROM_READ_PARAM_LENGTH      4u
 #define EEPROM_WRITE_HEADER_LENGTH    4u
-#define EEPROM_RESERVED_BASE          0xFC00u
+#define EEPROM_MAINTENANCE_BASE       0xFC00u
+#define EEPROM_MAINTENANCE_LIMIT      BOOT_STATE_ADDR_A
 
 typedef enum
 {
@@ -83,6 +90,7 @@ typedef enum
     PACKET_OPCODE_SLOT_ACTIVATE = 0x52,
     PACKET_OPCODE_SLOT_SNAPSHOT = 0x53,
     PACKET_OPCODE_SLOT_STATUS_FAST = 0x54,
+    PACKET_OPCODE_SECURITY_STATUS = 0x55,
     PACKET_OPCODE_ERASE = 0x81,
     PACKET_OPCODE_PROGRAM = 0x82,
     PACKET_OPCODE_VERIFY = 0x83,
@@ -103,6 +111,7 @@ typedef enum
     PACKET_ERRCODE_FORMAT,
     PACKET_ERRCODE_VERIFY,
     PACKET_ERRCODE_PARAM,
+    PACKET_ERRCODE_DENIED,
     PACKET_ERRCODE_UNKNOWN = 0xFF,
 } packet_errcode_t;
 
@@ -113,6 +122,82 @@ static packet_opcode_t packet_opcode;
 static uint16_t packet_payload_length;
 static uint8_t storage_buffer[4096];
 static bool w25_program_ok = true;
+static bool maintenance_unlocked;
+static bool downgrade_authorized;
+static uint32_t protocol_baud_rate = BL_USART_DEFAULT_BAUD_RATE;
+static uint64_t protocol_last_activity_ms;
+
+/**
+ * @brief 高速协议链路空闲过久后恢复到默认波特率。
+ *
+ * 超时从上一条协议响应发送完成后开始计算，而不是从命令到达时开始计算。
+ * 因此W25Q擦除、校验等耗时操作不会误占恢复窗口。DMA中仍有数据时也不会
+ * 切换波特率；如果上位机只发了半包后离线，超时后则丢弃残包并恢复115200。
+ */
+static void recover_default_baud_if_idle(void)
+{
+    uint64_t now_ms;
+
+    if (protocol_baud_rate == BL_USART_DEFAULT_BAUD_RATE ||
+        bl_usart_data_pending())
+        return;
+
+    now_ms = tim_get_ms();
+    if (now_ms - protocol_last_activity_ms < HIGH_SPEED_IDLE_TIMEOUT_MS)
+        return;
+
+    packet_index = 0;
+    packet_state = PACKET_STATE_HEADER;
+    bl_usart_set_baud(BL_USART_DEFAULT_BAUD_RATE);
+    protocol_baud_rate = BL_USART_DEFAULT_BAUD_RATE;
+    protocol_last_activity_ms = now_ms;
+    log_w("protocol idle timeout, baud rate restored to %u",
+          BL_USART_DEFAULT_BAUD_RATE);
+}
+
+/**
+ * @brief 判断一个Opcode是否属于可能改写底层状态或导出原始内容的工程接口。
+ *
+ * W25_ERASE/W25_PROGRAM是正常A/B上传必须经过的受限命令：它们只能操作非活动
+ * 槽，因此不列入维护命令。SLOT_ACTIVATE仍会执行完整签名验证。
+ */
+static bool opcode_requires_maintenance(packet_opcode_t opcode)
+{
+    switch (opcode)
+    {
+        case PACKET_OPCODE_W25_READ:
+        case PACKET_OPCODE_EEPROM_READ:
+        case PACKET_OPCODE_EEPROM_WRITE:
+        case PACKET_OPCODE_SLOT_SET_ACTIVE:
+        case PACKET_OPCODE_SLOT_SNAPSHOT:
+        case PACKET_OPCODE_ERASE:
+        case PACKET_OPCODE_PROGRAM:
+        case PACKET_OPCODE_VERIFY:
+            return true;
+
+        default:
+            return false;
+    }
+}
+
+void boot_protocol_set_maintenance_unlocked(bool physical_presence)
+{
+    downgrade_authorized = physical_presence;
+#ifdef FIRMWARE_BUILD_PROFILE_DEV
+    (void)physical_presence;
+    maintenance_unlocked = true;
+#else
+    maintenance_unlocked = physical_presence;
+#endif
+    log_i("security profile=%s maintenance=%s downgrade=%s",
+#ifdef FIRMWARE_BUILD_PROFILE_DEV
+          "DEV",
+#else
+          "PROD",
+#endif
+          maintenance_unlocked ? "unlocked" : "locked",
+          downgrade_authorized ? "authorized" : "locked");
+}
 
 /**
  * @brief 发送一个带错误码和CRC16的协议响应。
@@ -132,6 +217,7 @@ static void protocol_response(packet_opcode_t opcode, packet_errcode_t error,
     crc = crc16(response, cursor - response);
     put_u16_inc(&cursor, crc);
     bl_usart_write(response, cursor - response);
+    protocol_last_activity_ms = tim_get_ms();
 }
 
 /**
@@ -224,6 +310,8 @@ static void handle_set_baud(void)
 
     protocol_response(PACKET_OPCODE_SET_BAUD, PACKET_ERRCODE_OK, NULL, 0);
     bl_usart_set_baud(baud_rate);
+    protocol_baud_rate = baud_rate;
+    protocol_last_activity_ms = tim_get_ms();
     log_i("protocol baud rate: %u", baud_rate);
 }
 
@@ -338,7 +426,8 @@ static void handle_eeprom_write(void)
     address = get_u16(payload);
     size = get_u16(payload + 2);
     if (size != packet_payload_length - EEPROM_WRITE_HEADER_LENGTH ||
-        address < EEPROM_RESERVED_BASE || (uint32_t)address + size > BL24C512_SIZE)
+        address < EEPROM_MAINTENANCE_BASE ||
+        (uint32_t)address + size > EEPROM_MAINTENANCE_LIMIT)
     {
         protocol_response(PACKET_OPCODE_EEPROM_WRITE, PACKET_ERRCODE_PARAM, NULL, 0);
         return;
@@ -445,6 +534,33 @@ static void handle_slot_status_fast(void)
                       result, cursor - result);
 }
 
+/**
+ * @brief 返回防降级下限、当前候选版本以及本次会话的物理授权状态。
+ *
+ * 响应固定为9字节，便于上位机在发送固件前解释设备策略；最终授权仍由
+ * SLOT_ACTIVATE在固件签名和完整数据校验通过后执行。
+ */
+static void handle_security_status(void)
+{
+    boot_state_t state;
+    uint8_t result[9];
+    uint8_t *cursor = result;
+
+    if (packet_payload_length != 0)
+    {
+        protocol_response(PACKET_OPCODE_SECURITY_STATUS,
+                          PACKET_ERRCODE_PARAM, NULL, 0);
+        return;
+    }
+
+    boot_state_load(&state);
+    put_u32_inc(&cursor, state.minimum_security_version);
+    put_u32_inc(&cursor, state.pending_security_version);
+    put_u8_inc(&cursor, downgrade_authorized ? 1u : 0u);
+    protocol_response(PACKET_OPCODE_SECURITY_STATUS, PACKET_ERRCODE_OK,
+                      result, cursor - result);
+}
+
 static void handle_slot_set_active(void)
 {
     boot_state_t state;
@@ -474,6 +590,9 @@ static void handle_slot_set_active(void)
     state.attempts_left = 0;
     state.active_crc32 = slot_header.data_crc32;
     state.pending_crc32 = 0;
+    state.minimum_security_version = firmware_security_floor_after_confirm(
+        state.minimum_security_version, slot_header.security_version);
+    state.pending_security_version = 0;
     if (!boot_state_save(&state))
     {
         protocol_response(PACKET_OPCODE_SLOT_SET_ACTIVE, PACKET_ERRCODE_VERIFY, NULL, 0);
@@ -514,9 +633,21 @@ static void handle_slot_activate(void)
         return;
     }
 
+    if (!firmware_security_version_allowed(state.minimum_security_version,
+                                           header.security_version,
+                                           downgrade_authorized))
+    {
+        log_w("firmware security downgrade denied: candidate=%u minimum=%u",
+              header.security_version, state.minimum_security_version);
+        protocol_response(PACKET_OPCODE_SLOT_ACTIVATE,
+                          PACKET_ERRCODE_DENIED, NULL, 0);
+        return;
+    }
+
     state.phase = BOOT_PHASE_INSTALL_PENDING;
     state.pending_slot = slot;
     state.pending_crc32 = header.data_crc32;
+    state.pending_security_version = header.security_version;
     state.attempts_left = BOOT_TRIAL_ATTEMPTS;
     if (!boot_state_save(&state))
     {
@@ -554,6 +685,7 @@ static void handle_slot_snapshot(void)
     boot_state_default(&state);
     state.active_slot = slot;
     state.active_crc32 = header.data_crc32;
+    state.minimum_security_version = header.security_version;
     if (!boot_state_save(&state))
     {
         protocol_response(PACKET_OPCODE_SLOT_SNAPSHOT, PACKET_ERRCODE_VERIFY, NULL, 0);
@@ -747,6 +879,13 @@ static void handle_legacy_verify(void)
  */
 static boot_protocol_action_t handle_packet(void)
 {
+    if (opcode_requires_maintenance(packet_opcode) && !maintenance_unlocked)
+    {
+        log_w("maintenance opcode denied: %02X", packet_opcode);
+        protocol_response(packet_opcode, PACKET_ERRCODE_DENIED, NULL, 0);
+        return BOOT_PROTOCOL_ACTION_NONE;
+    }
+
     switch (packet_opcode)
     {
         case PACKET_OPCODE_INQUERY:         handle_inquiry(); break;
@@ -764,6 +903,7 @@ static boot_protocol_action_t handle_packet(void)
         case PACKET_OPCODE_SLOT_ACTIVATE:   handle_slot_activate(); break;
         case PACKET_OPCODE_SLOT_SNAPSHOT:   handle_slot_snapshot(); break;
         case PACKET_OPCODE_SLOT_STATUS_FAST: handle_slot_status_fast(); break;
+        case PACKET_OPCODE_SECURITY_STATUS: handle_security_status(); break;
         case PACKET_OPCODE_ERASE:           handle_legacy_erase(); break;
         case PACKET_OPCODE_PROGRAM:         handle_legacy_program(); break;
         case PACKET_OPCODE_VERIFY:          handle_legacy_verify(); break;
@@ -880,6 +1020,8 @@ static bool parse_byte(uint8_t byte)
 void boot_protocol_init(void)
 {
     bl_usart_init();
+    protocol_baud_rate = BL_USART_DEFAULT_BAUD_RATE;
+    protocol_last_activity_ms = tim_get_ms();
 }
 
 bool boot_protocol_data_pending(void)
@@ -890,6 +1032,8 @@ bool boot_protocol_data_pending(void)
 boot_protocol_action_t boot_protocol_process(void)
 {
     uint8_t byte;
+
+    recover_default_baud_if_idle();
 
     /*
      * 主循环一次尽量排空DMA中已经到达的数据，但发现完整帧后立即执行该帧。

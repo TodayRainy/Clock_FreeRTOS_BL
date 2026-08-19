@@ -1,3 +1,8 @@
+/**
+ * @file firmware_slot.h
+ * @brief 内部应用和两颗外部固件槽的校验、安装及快照接口。
+ */
+
 #ifndef __FIRMWARE_SLOT_H__
 #define __FIRMWARE_SLOT_H__
 
@@ -11,14 +16,14 @@
  * @brief 校验 STM32 内部 Flash 中的完整应用固件。
  *
  * @param[out] header 返回已通过格式校验的内部 Header。
- * @return Header和应用数据CRC32均正确时返回 true。
+ * @return Header签名、应用CRC32、SHA-256和向量表均正确时返回 true。
  */
 bool firmware_internal_validate(magic_header_t *header);
 
 /**
  * @brief 从指定外部槽读取并校验固件 Header。
  *
- * 本函数不扫描应用数据，只确认Header自身及槽内边界合法。
+ * 本函数不扫描应用数据，只确认Header自身、ECDSA签名及槽内边界合法。
  *
  * @param[in] slot 槽号，0为A，1为B。
  * @param[out] header 返回有效的Header。
@@ -27,11 +32,11 @@ bool firmware_internal_validate(magic_header_t *header);
 bool firmware_slot_load_header(uint8_t slot, magic_header_t *header);
 
 /**
- * @brief 使用已经校验的Header计算外部槽中应用数据的CRC32。
+ * @brief 使用已经验签的Header校验外部槽应用数据。
  *
  * @param[in] slot 槽号，0为A，1为B。
  * @param[in] header 由 @ref firmware_slot_load_header 得到的Header。
- * @return 实际CRC32与Header记录值相等时返回 true。
+ * @return CRC32、SHA-256和应用向量表均符合Header时返回 true。
  */
 bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header);
 
@@ -49,7 +54,8 @@ bool firmware_slot_validate(uint8_t slot, magic_header_t *header);
  *
  * 调用方必须紧邻本调用完成 @ref firmware_slot_validate，并传入当时得到的
  * Header。安装顺序固定为：擦除内部Header、写应用、内部CRC校验、最后写
- * Header。任何中断都会让内部半成品保持不可启动状态。
+ * Header。复制后同时复核CRC32、SHA-256和向量表；任何中断都会让内部半成品
+ * 保持不可启动状态。
  *
  * @param[in] slot 要安装的外部槽。
  * @param[in] verified_header 已通过完整槽校验的Header。

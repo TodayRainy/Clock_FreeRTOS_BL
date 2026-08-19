@@ -1,0 +1,6 @@
+h
+loadbin ../.device-backups/stm32f407_signed_v3_final_20260818.bin, 0x08000000
+verifybin ../.device-backups/stm32f407_signed_v3_final_20260818.bin, 0x08000000
+r
+g
+q

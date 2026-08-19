@@ -1,3 +1,8 @@
+/**
+ * @file main.c
+ * @brief WeatherClock任务创建、核心初始化和健康就绪信号入口。
+ */
+
 #include <stdio.h>
 #include "FreeRTOS.h"
 #include "task.h"
@@ -7,6 +12,7 @@
 #include "wifi.h"
 #include "page.h"
 #include "ab_confirm.h"
+#include "health_monitor.h"
 
 extern void board_lowlevel_init(void);
 extern void board_init(void);
@@ -17,6 +23,7 @@ static void main_init(void *param)
     ui_init();
     
     welcome_page_display();
+    health_monitor_mark_ready();
     
     printf("current app version: %s\r\n", APP_VERSION);
 
@@ -33,6 +40,7 @@ static void main_init(void *param)
 int main(void)
 {
     board_lowlevel_init();
+    health_monitor_start();
     workqueue_init();
     ab_confirm_start();
     

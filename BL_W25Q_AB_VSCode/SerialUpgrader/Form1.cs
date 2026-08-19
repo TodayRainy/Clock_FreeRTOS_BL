@@ -77,10 +77,13 @@ namespace SerialUpgrader
 
             textBoxLog.AppendText($"头部地址: 0x{header.ThisAddress:X8}\r\n");
             textBoxLog.AppendText($"固件版本: {header.Version}\r\n");
+            textBoxLog.AppendText($"安全版本: {header.SecurityVersion}\r\n");
             textBoxLog.AppendText($"固件类型: {header.DataType}\r\n");
             textBoxLog.AppendText($"固件偏移: {header.DataOffset}\r\n");
             textBoxLog.AppendText($"固件地址: 0x{header.DataAddress:X8}\r\n");
             textBoxLog.AppendText($"固件校验: 0x{header.DataCrc32:X8}\r\n");
+            textBoxLog.AppendText($"签名格式: XBIN v{header.FormatVersion}, Key ID 0x{header.KeyId:X8}\r\n");
+            textBoxLog.AppendText($"SHA-256: {Convert.ToHexString(header.ImageSha256)}\r\n");
             textBoxLog.AppendText($"固件大小: {header.DataLength} ({header.DataLength / 1024.0:F2} KB)\r\n");
 
             using Transfer transfer = new(port);

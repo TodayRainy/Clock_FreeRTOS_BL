@@ -35,7 +35,8 @@ err:
     error_page_display("wireless init failed");
     while (1)
     {
-        ;
+        /* 错误页是终止状态，但必须让出CPU，保证UI和喂狗任务仍能运行。 */
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }
 
@@ -62,6 +63,7 @@ void wifi_wait_connect(void)
     error_page_display("wireless connect failed");
     while (1)
     {
-        ;
+        /* 网络不可用不属于核心启动失败，保持错误页并让其他任务继续运行。 */
+        vTaskDelay(pdMS_TO_TICKS(1000));
     }
 }

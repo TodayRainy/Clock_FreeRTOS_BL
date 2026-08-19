@@ -10,6 +10,20 @@
 #include "boot_state.h"
 
 /**
+ * @brief 把旧版 BCR 保留区中的擦除值迁移为尚未启用防降级的版本 0。
+ *
+ * v3.1及更早版本把这两个位置作为保留字节并保持为0xFF。记录先按原始内容
+ * 完成CRC校验，再在RAM中规范化；下次正常保存时会自然写成新版格式。
+ */
+static void boot_state_normalize_security(boot_state_t *state)
+{
+    if (state->minimum_security_version == UINT32_MAX)
+        state->minimum_security_version = 0;
+    if (state->pending_security_version == UINT32_MAX)
+        state->pending_security_version = 0;
+}
+
+/**
  * @brief 检查单个 EEPROM 状态副本的格式和 CRC32。
  */
 static bool boot_state_record_valid(const boot_state_t *state)
@@ -37,6 +51,8 @@ void boot_state_default(boot_state_t *state)
     state->attempts_left = 0;
     state->active_crc32 = 0;
     state->pending_crc32 = 0;
+    state->minimum_security_version = 0;
+    state->pending_security_version = 0;
     state->record_crc32 = crc32((const uint8_t *)state,
                                 offset_of(boot_state_t, record_crc32));
 }
@@ -60,6 +76,7 @@ bool boot_state_load(boot_state_t *state)
         *state = a;
     else
         *state = b;
+    boot_state_normalize_security(state);
     return true;
 }
 

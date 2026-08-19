@@ -1,75 +1,115 @@
 #! /usr/bin/env python3
 # -*- coding: utf-8 -*-
 
+"""Package a WeatherClock application binary as a signed XBIN v2 image."""
+
+import argparse
+import hashlib
 import os
+import struct
 import sys
 import time
 import zlib
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT / "tools"))
+
+from firmware_crypto import (  # noqa: E402
+    ensure_key_pair,
+    public_key_id,
+    sign_header,
+)
 
 MAGIC_HEADER_MAGIC = 0x4D414749  # "MAGI"
+MAGIC_HEADER_FORMAT = 2
+MAGIC_HEADER_SIZE = 256
+MAGIC_HEADER_AREA_SIZE = 4096
 DATA_TYPE_FIRMWARE = 1
+HASH_SHA256 = 1
+SIGNATURE_ECDSA_P256_SHA256 = 1
 BL_VERSION_MAJOR = 1
 BL_VERSION_MINOR = 4
 BL_VERSION_PATCH = 0
 BL_VERSION_EXTRA = "ab"
 
 def main():
-    project_root = os.path.realpath(os.path.join(os.path.dirname(__file__), ".."))
+    parser = argparse.ArgumentParser(description="Build a signed XBIN v2 image")
+    parser.add_argument("input_file", type=Path)
+    parser.add_argument("output_file", nargs="?", type=Path)
+    parser.add_argument("--private-key", required=True, type=Path)
+    parser.add_argument("--public-key", required=True, type=Path)
+    parser.add_argument("--openssl", required=True, type=Path)
+    parser.add_argument("--version")
+    parser.add_argument("--security-version", type=lambda value: int(value, 0),
+                        default=1)
+    args = parser.parse_args()
 
-    if len(sys.argv) not in (2, 3):
-        print("Usage: gen_magic_header.py <input_file> [output_file]")
-        sys.exit(1)
+    if not args.input_file.is_file():
+        parser.error(f"input file does not exist: {args.input_file}")
+    if not 0 <= args.security_version <= 0xFFFFFFFF:
+        parser.error("security version must fit in uint32")
 
-    binfile = os.path.realpath(sys.argv[1])
-    if not os.path.isfile(binfile):
-        print(f"Error: File '{binfile}' does not exist.")
-        sys.exit(1)
-    
-    with open(binfile, "rb") as f:
-        bin_data = f.read()
+    bin_data = args.input_file.read_bytes()
     bin_crc = zlib.crc32(bin_data) & 0xFFFFFFFF
+    bin_sha256 = hashlib.sha256(bin_data).digest()
+    public_point = ensure_key_pair(
+        args.openssl, args.private_key, args.public_key, create=False
+    )
+    key_id = public_key_id(public_point)
 
-    # 构建magic header
-    header = []
-
-    header.append((MAGIC_HEADER_MAGIC).to_bytes(4, byteorder='little'))  # magic
-    header.append((0).to_bytes(4, byteorder='little'))  # bitmask
-    header.append((0).to_bytes(4 * 6, byteorder='little'))  # reserved1
-
-    header.append((DATA_TYPE_FIRMWARE).to_bytes(4, byteorder='little'))  # data_type
-    header.append((4096).to_bytes(4, byteorder='little'))  # data_offset
-    header.append((0x08010000).to_bytes(4, byteorder='little'))  # data_address
-    header.append((len(bin_data)).to_bytes(4, byteorder='little'))  # data_length
-    header.append((bin_crc).to_bytes(4, byteorder='little'))  # data_crc32
-    header.append((0).to_bytes(4 * 11, byteorder='little'))  # reserved2
+    # Header保持为固定偏移的二进制结构，避免C、Python和C#各自做隐式对齐。
+    header = bytearray(MAGIC_HEADER_SIZE)
+    struct.pack_into(
+        "<IIIIII", header, 0,
+        MAGIC_HEADER_MAGIC,
+        MAGIC_HEADER_FORMAT,
+        MAGIC_HEADER_SIZE,
+        HASH_SHA256,
+        SIGNATURE_ECDSA_P256_SHA256,
+        key_id,
+    )
+    struct.pack_into("<I", header, 24, args.security_version)
+    struct.pack_into(
+        "<IIIII", header, 32,
+        DATA_TYPE_FIRMWARE,
+        MAGIC_HEADER_AREA_SIZE,
+        0x08010000,
+        len(bin_data),
+        bin_crc,
+    )
+    header[52:84] = bin_sha256
 
     version_date = time.strftime("%y%m%d", time.localtime())
     version_time = time.strftime("%H%M", time.localtime())
-    version_str = f"v{BL_VERSION_MAJOR}.{BL_VERSION_MINOR}.{BL_VERSION_PATCH}-{version_date}-{version_time}-{BL_VERSION_EXTRA}"
+    version_str = args.version or (
+        f"v{BL_VERSION_MAJOR}.{BL_VERSION_MINOR}.{BL_VERSION_PATCH}-"
+        f"{version_date}-{version_time}-{BL_VERSION_EXTRA}"
+    )
     version_bytes = version_str.encode('ascii')
-    version_bytes = version_bytes.ljust(128, b'\x00')
-    header.append(version_bytes)  # version
+    if len(version_bytes) >= 64:
+        parser.error("version string must be shorter than 64 ASCII bytes")
+    header[96:96 + len(version_bytes)] = version_bytes
+    struct.pack_into("<I", header, 248, 0x0800C000)
 
-    header.append((0).to_bytes(4 * 6, byteorder='little'))  # reserved3
-    header.append((0x0800C000).to_bytes(4, byteorder='little'))  # this_address
+    # 先对signature和this_crc32为零的规范化Header签名，再让CRC32覆盖签名。
+    header[160:224] = sign_header(args.openssl, args.private_key, bytes(header))
+    struct.pack_into("<I", header, 252, zlib.crc32(header[:252]) & 0xFFFFFFFF)
 
-    this_crc = zlib.crc32(b''.join(header)) & 0xFFFFFFFF
-    header.append((this_crc).to_bytes(4, byteorder='little'))  # this_crc32
-
-    magic_header = b''.join(header)
-    magic_header = magic_header.ljust(4096, b'\x00')
+    magic_header = bytes(header).ljust(MAGIC_HEADER_AREA_SIZE, b'\x00')
 
     # 生成最终文件
-    if len(sys.argv) == 3:
-        output_file = os.path.realpath(sys.argv[2])
-    else:
-        upgrade_filename = os.path.splitext(os.path.basename(binfile))[0] + "_upgrade.xbin"
-        output_file = os.path.join(project_root, "generated", upgrade_filename)
-    os.makedirs(os.path.dirname(output_file), exist_ok=True)
-    with open(output_file, "wb") as f:
-        f.write(b''.join([magic_header, bin_data]))
+    output_file = args.output_file
+    if output_file is None:
+        output_file = args.input_file.with_name(args.input_file.stem + "_upgrade.xbin")
+    output_file.parent.mkdir(parents=True, exist_ok=True)
+    output_file.write_bytes(magic_header + bin_data)
 
-    print(f"Generated file: {output_file}")
+    print(f"Generated signed XBIN: {output_file}")
+    print(f"Version: {version_str}")
+    print(f"Key ID: 0x{key_id:08X}")
+    print(f"Security version: {args.security_version}")
+    print(f"Image SHA-256: {bin_sha256.hex().upper()}")
 
 if __name__ == "__main__":
     main()

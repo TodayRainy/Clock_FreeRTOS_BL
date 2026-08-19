@@ -73,6 +73,15 @@
       "problemMatcher": ["$gcc"]
     },
     {
+      "label": "CMake: Test Firmware Security (Release)",
+      "type": "process",
+      "command": "cmake",
+      "args": ["--build", "--preset", "security-test-release", "--parallel"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "CMake: Configure Release",
+      "problemMatcher": ["$gcc"]
+    },
+    {
       "label": "CMake: Build Bootloader (Release)",
       "type": "process",
       "command": "cmake",

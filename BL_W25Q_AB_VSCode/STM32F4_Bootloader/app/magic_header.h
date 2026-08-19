@@ -1,3 +1,8 @@
+/**
+ * @file magic_header.h
+ * @brief XBIN Header固定格式与CRC32校验接口。
+ */
+
 #ifndef __MAGIC_HEADER_H__
 #define __MAGIC_HEADER_H__
 
@@ -14,11 +19,5 @@
  * @return 格式、地址、长度及 Header CRC32 全部正确时返回 true。
  */
 bool magic_header_validate_data(const magic_header_t *header);
-
-/**
- * @brief 校验位于 STM32 内部固定地址的固件 Header。
- * @return 内部 Header 有效时返回 true。
- */
-bool magic_header_validate(void);
 
 #endif /* __MAGIC_HEADER_H__ */

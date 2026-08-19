@@ -7,7 +7,9 @@
 
 > 本文主体保留最初A/B实现和重构阶段的设计、故障注入记录；VS Code/GCC迁移
 > 及后续传输优化的最新结果见 `TRANSFER_OPTIMIZATION_REPORT.md` 和
-> `SAFETY_BASELINE.md`。
+> `SAFETY_BASELINE.md`。v3固件签名、IWDG和DEV/PROD权限是后续独立迭代，见
+> `SECURE_BOOT_GUIDE.md`；本文中的v2.1板载数值作为迁移前历史基线保留，当前
+> v3板载状态和最终救援镜像以`SAFETY_BASELINE.md`为准。
 
 ## 1. 结论
 
@@ -20,11 +22,11 @@
 
 | 项目 | 当前值 |
 | --- | --- |
-| Bootloader | `v2.1.0-ab-fast-spidma` |
-| 状态 | `Normal`，BCR sequence = 123 |
+| Bootloader | `v3.0.0-signed-dev` |
+| 状态 | `Normal`，BCR sequence = 146 |
 | 活动/已确认槽 | Slot A |
-| Slot A | `v1.4.0-260818-1913-ab`，CRC32 `0x98A25921`，完整有效 |
-| Slot B | `v1.4.0-260818-1913-ab`，CRC32 `0x98A25921`，完整有效 |
+| Slot A | `v1.4.0-260818-2038-ab`，CRC32 `0x8AB683DA`，签名及数据完整有效 |
+| Slot B | `v1.4.0-260818-2038-ab`，CRC32 `0x8AB683DA`，签名及数据完整有效 |
 | 内部正在运行的应用 | 与已确认 Slot A 一致 |
 
 这套设计保证一次普通应用升级失败不会覆盖 Bootloader，也不会同时破坏已确认
@@ -340,10 +342,10 @@ Bootloader 不在线自更新、SWD 未关闭、RDP 为 Level 0，并保存了�
 
 ## 12. 已知边界
 
-- 目前完整性和意外损坏检测使用 CRC32，不包含数字签名、加密或防降级；个人项目
-  场景足够，但它不防恶意固件。
-- 应用确认条件是成功运行 5 秒，不是完整业务自检。如果将来需要更严格判断，可在
-  显示、传感器、文件系统等关键模块就绪后再调用确认逻辑。
+- 本报告对应的v2.1板载基线只使用CRC32。当前主线v3.2已经加入ECDSA-P256、
+  SHA-256和EEPROM双副本安全版本下限；固件仍未加密，详见`SECURE_BOOT_GUIDE.md`。
+- 主线v3的应用确认已增加核心板级/显示ready信号、IWDG和额外5秒稳定窗口，但
+  仍不是覆盖所有业务任务的心跳系统；网络故障被有意排除在回退条件之外。
 - 外部两槽各限制 1 MiB，已明显大于内部 448 KiB 应用上限；剩余 W25 空间目前未
   建立分区表。
 - 没有启用 Bootloader 扇区硬件写保护，原因是当前仍处于开发期并需要 ST-Link

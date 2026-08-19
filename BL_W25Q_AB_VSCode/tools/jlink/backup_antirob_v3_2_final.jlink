@@ -1,0 +1,5 @@
+h
+savebin ../.device-backups/stm32f407_antirob_v3_2_final_20260819.bin, 0x08000000, 0x80000
+verifybin ../.device-backups/stm32f407_antirob_v3_2_final_20260819.bin, 0x08000000
+g
+q

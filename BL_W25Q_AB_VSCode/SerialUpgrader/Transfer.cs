@@ -39,6 +39,14 @@ public sealed class BootStatus
     public FirmwareSlotInfo[] Slots { get; init; } = [];
 }
 
+/// <summary>设备当前执行的防降级策略状态。</summary>
+public sealed class FirmwareSecurityStatus
+{
+    public uint MinimumVersion { get; init; }
+    public uint PendingVersion { get; init; }
+    public bool DowngradeAuthorized { get; init; }
+}
+
 /// <summary>
 /// USART3 Bootloader协议客户端。普通请求执行同步的请求/响应事务；固件中间块
 /// 使用接受ACK形成收写流水线，最终同步块和SLOT_ACTIVATE完成写入及A/B提交。
@@ -102,6 +110,7 @@ public sealed class Transfer : IDisposable
         VERIFY = 0x83,
         RESET = 0x21,
         BOOT = 0x22,
+        W25_READ = 0x41,
         W25_ERASE = 0x42,
         W25_PROGRAM = 0x43,
         W25_PROGRAM_ASYNC = 0x44,
@@ -109,6 +118,7 @@ public sealed class Transfer : IDisposable
         SLOT_ACTIVATE = 0x52,
         SLOT_SNAPSHOT = 0x53,
         SLOT_STATUS_FAST = 0x54,
+        SECURITY_STATUS = 0x55,
     }
 
     enum INQUIRY
@@ -125,6 +135,7 @@ public sealed class Transfer : IDisposable
         FORMAT,
         VERIFY,
         PARAM,
+        DENIED,
         UNKNOWN = 0xff,
     }
 
@@ -507,6 +518,27 @@ public sealed class Transfer : IDisposable
         return false;
     }
 
+    /// <summary>
+    /// 使用一次最小的W25Q只读请求探测工程维护接口是否开放。
+    /// true表示允许，false表示Bootloader明确返回DENIED，null表示链路或协议异常。
+    /// 此方法只读取A槽首字节，不会擦除或改写任何存储内容。
+    /// </summary>
+    public async Task<bool?> IsMaintenanceReadAllowed()
+    {
+        byte[] param = new byte[7];
+        param[0] = 0;                         // W25Q芯片0（A槽所在芯片）
+        BitConverter.GetBytes(0u).CopyTo(param, 1);
+        BitConverter.GetBytes((ushort)1).CopyTo(param, 5);
+
+        Response? response = await PacketRequest(OPCODE.W25_READ, param,
+                                                 TimeSpan.FromSeconds(2));
+        if (response?.Errcode == ERRCODE.OK)
+            return true;
+        if (response?.Errcode == ERRCODE.DENIED)
+            return false;
+        return null;
+    }
+
     /// <summary>读取BCR以及两个外部槽的Header和全量校验结果。</summary>
     public async Task<BootStatus?> GetBootStatus()
     {
@@ -567,6 +599,25 @@ public sealed class Transfer : IDisposable
             ActiveCrc32 = BitConverter.ToUInt32(data, 9),
             PendingCrc32 = BitConverter.ToUInt32(data, 13),
             Slots = []
+        };
+    }
+
+    /// <summary>
+    /// 查询设备防降级下限。旧Bootloader不支持该命令时返回null，不影响原有升级。
+    /// </summary>
+    public async Task<FirmwareSecurityStatus?> GetFirmwareSecurityStatus()
+    {
+        Response? response = await PacketRequest(OPCODE.SECURITY_STATUS, null,
+                                                 TimeSpan.FromSeconds(2));
+        byte[]? data = response?.Param;
+        if (response?.Errcode != ERRCODE.OK || data == null || data.Length != 9)
+            return null;
+
+        return new FirmwareSecurityStatus
+        {
+            MinimumVersion = BitConverter.ToUInt32(data, 0),
+            PendingVersion = BitConverter.ToUInt32(data, 4),
+            DowngradeAuthorized = data[8] != 0
         };
     }
 
@@ -657,6 +708,8 @@ public sealed class Transfer : IDisposable
             response = await PacketRequest(OPCODE.SLOT_ACTIVATE, [slot],
                                            TimeSpan.FromSeconds(15));
         }
+        if (response?.Errcode == ERRCODE.DENIED)
+            OnEvent?.Invoke("Bootloader拒绝安装：固件安全版本低于设备下限，需使用新签名回退包或KEY2授权");
         return response?.Errcode == ERRCODE.OK;
     }
 
