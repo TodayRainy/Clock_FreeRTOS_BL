@@ -1,9 +1,9 @@
 # Formal 1.0.1 发布说明
 
-发布日期：2026-08-20  
-发布序号：5  
-安全版本：2  
-XBIN 格式：Formal revision 1
+- 发布日期：2026-08-20
+- 发布序号：5
+- 安全版本：2
+- XBIN 格式：Formal revision 1
 
 ## 发布定位
 
@@ -68,4 +68,3 @@ Manifest：
 
 保存后及最终验收后均完成整片 Verify。项目保持 RDP0、SWD 和 Option Bytes 不变；
 `formal-1.0.0` 的已验证救援镜像也继续保留。
-
