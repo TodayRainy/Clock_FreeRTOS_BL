@@ -44,7 +44,6 @@ void board_lowlevel_init(void)
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM6, ENABLE);
     RCC_APB1PeriphClockCmd(RCC_APB1Periph_PWR, ENABLE);
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_DMA1, ENABLE);
-    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_DMA2, ENABLE);
     PWR_BackupAccessCmd(ENABLE);
     RCC_LSEConfig(RCC_LSE_ON);
     while (RCC_GetFlagStatus(RCC_FLAG_LSERDY) == RESET);

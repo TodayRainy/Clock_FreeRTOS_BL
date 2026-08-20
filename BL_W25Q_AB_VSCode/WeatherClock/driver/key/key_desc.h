@@ -1,5 +1,10 @@
-#ifndef __KEY_DESC_H__
-#define __KEY_DESC_H__
+/**
+ * @file key_desc.h
+ * @brief 按键 GPIO、EXTI 与回调描述。
+ */
+
+#ifndef CLOCK_F407_APP_KEY_DESC_H
+#define CLOCK_F407_APP_KEY_DESC_H
 
 #include <stdint.h>
 #include "stm32f4xx.h"
@@ -16,4 +21,4 @@ struct key_desc
     key_func_t func;
 };
 
-#endif /* __KEY_H__ */
+#endif /* CLOCK_F407_APP_KEY_DESC_H */

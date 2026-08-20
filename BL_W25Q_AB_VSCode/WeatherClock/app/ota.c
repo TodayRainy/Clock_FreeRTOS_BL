@@ -314,7 +314,7 @@ static bool ota_check(ota_candidate_t *candidate)
     uint8_t target_slot;
 
     printf("[OTA] checking manifest\n");
-    if (!wifi_is_connected() || !download_manifest() ||
+    if (!esp_at_wifi_is_connected() || !download_manifest() ||
         !manifest_parse(manifest_buffer, candidate))
     {
         printf("[OTA] manifest check failed\n");

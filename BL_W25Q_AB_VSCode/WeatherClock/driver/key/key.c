@@ -1,43 +1,42 @@
-#include <stdbool.h>
-#include <stddef.h>
-#include "stm32f4xx.h"
-#include "key.h"
-#include "key_desc.h"
+/**
+ * @file key.c
+ * @brief WeatherClockæŒ‰é”®GPIOä¸ŽEXTIæè¿°é©±åŠ¨ã€‚
+ *
+ * æœ¬é©±åŠ¨åªé…ç½®å•ä¸ªæè¿°å¯¹è±¡å¹¶ä¿å­˜å›žè°ƒï¼›å…·ä½“EXTIä¸­æ–­å…¥å£ç”±æ¿çº§ä»£ç å†³å®šã€‚
+ */
 
-// KEY1: PA0
-// KEY2: PC4
-// KEY3: PC5
+#include "key.h"
+
+#include "key_desc.h"
+#include "stm32f4xx.h"
 
 void key_init(key_desc_t key)
 {
-    // GPIO³õÊ¼»¯½á¹¹ÌåÄ£°å
-    GPIO_InitTypeDef GPIO_InitStructure;
-    GPIO_StructInit(&GPIO_InitStructure);
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IN;
-    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_DOWN;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Medium_Speed;
-    
-    // EXTIÖÐ¶Ï³õÊ¼»¯½á¹¹ÌåÄ£°å
-    EXTI_InitTypeDef EXTI_InitStructure;
-    EXTI_StructInit(&EXTI_InitStructure);
-    EXTI_InitStructure.EXTI_Mode = EXTI_Mode_Interrupt;
-    EXTI_InitStructure.EXTI_Trigger = EXTI_Trigger_Rising;
-    EXTI_InitStructure.EXTI_LineCmd = ENABLE;
-    
-    // EXTIÖÐ¶ÏÓÅÏÈ¼¶ÅäÖÃ½á¹¹ÌåÄ£°å
-    NVIC_InitTypeDef NVIC_InitStructure;
-    NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 5;
-    NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
-    NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
-    
-    // KEY1³õÊ¼»¯
-    GPIO_InitStructure.GPIO_Pin = key->pin;
-    GPIO_Init(key->port, &GPIO_InitStructure);
+    GPIO_InitTypeDef gpio;
+    EXTI_InitTypeDef exti;
+    NVIC_InitTypeDef nvic;
+
+    GPIO_StructInit(&gpio);
+    gpio.GPIO_Mode = GPIO_Mode_IN;
+    gpio.GPIO_PuPd = GPIO_PuPd_DOWN;
+    gpio.GPIO_Speed = GPIO_Medium_Speed;
+    gpio.GPIO_Pin = key->pin;
+    GPIO_Init(key->port, &gpio);
+
     SYSCFG_EXTILineConfig(key->exti_port_src, key->exti_pin_src);
-    EXTI_InitStructure.EXTI_Line = key->exti_line;
-    EXTI_Init(&EXTI_InitStructure);
-    NVIC_InitStructure.NVIC_IRQChannel = key->irqn;
-    NVIC_Init(&NVIC_InitStructure);
+
+    EXTI_StructInit(&exti);
+    exti.EXTI_Mode = EXTI_Mode_Interrupt;
+    exti.EXTI_Trigger = EXTI_Trigger_Rising;
+    exti.EXTI_LineCmd = ENABLE;
+    exti.EXTI_Line = key->exti_line;
+    EXTI_Init(&exti);
+
+    nvic.NVIC_IRQChannelPreemptionPriority = 5u;
+    nvic.NVIC_IRQChannelSubPriority = 0u;
+    nvic.NVIC_IRQChannelCmd = ENABLE;
+    nvic.NVIC_IRQChannel = key->irqn;
+    NVIC_Init(&nvic);
 }
 
 bool key_read(key_desc_t key)

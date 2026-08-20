@@ -1,25 +1,34 @@
-#include <string.h>
-#include "stm32f4xx.h"
+/**
+ * @file rtc.c
+ * @brief STM32F407 片上 RTC 的二进制日期时间读写。
+ *
+ * 按 STM32 RTC 的要求先读时间寄存器、再读日期寄存器：读取时间会锁住
+ * Calendar Shadow Registers，读取日期后解锁，因此一次调用即可得到一致快照。
+ */
+
 #include "rtc.h"
+
+#include "stm32f4xx.h"
 
 void rtc_init(void)
 {
-    RTC_InitTypeDef RTC_InitStruct;
-    RTC_StructInit(&RTC_InitStruct);
-    RTC_Init(&RTC_InitStruct);
-    
+    RTC_InitTypeDef rtc;
+
+    RTC_StructInit(&rtc);
+    RTC_Init(&rtc);
+
     RCC_RTCCLKCmd(ENABLE);
     RTC_WaitForSynchro();
 }
 
-static void _rtc_set_time_once(const rtc_date_time_t *date_time)
+static void rtc_set_once(const rtc_date_time_t *date_time)
 {
     RTC_DateTypeDef date;
     RTC_TimeTypeDef time;
-    
+
     RTC_DateStructInit(&date);
     RTC_TimeStructInit(&time);
-    
+
     date.RTC_Year = date_time->year - 2000;
     date.RTC_Month = date_time->month;
     date.RTC_Date = date_time->day;
@@ -30,20 +39,20 @@ static void _rtc_set_time_once(const rtc_date_time_t *date_time)
     
     RTC_SetDate(RTC_Format_BIN, &date);
     RTC_SetTime(RTC_Format_BIN, &time);
-    
 }
 
-static void _rtc_get_time_once(rtc_date_time_t *date_time)
+static void rtc_get_once(rtc_date_time_t *date_time)
 {
     RTC_DateTypeDef date;
     RTC_TimeTypeDef time;
-    
+
     RTC_DateStructInit(&date);
     RTC_TimeStructInit(&time);
-    
-    RTC_GetDate(RTC_Format_BIN, &date);
+
+    /* TR 读取后 Shadow Registers 保持不变，直到随后读取 DR。 */
     RTC_GetTime(RTC_Format_BIN, &time);
-    
+    RTC_GetDate(RTC_Format_BIN, &date);
+
     date_time->year = 2000 + date.RTC_Year;
     date_time->month = date.RTC_Month;
     date_time->day = date.RTC_Date;
@@ -56,19 +65,15 @@ static void _rtc_get_time_once(rtc_date_time_t *date_time)
 void rtc_set_time(const rtc_date_time_t *date_time)
 {
     rtc_date_time_t rtime;
-    do {
-        _rtc_set_time_once(date_time);
-        _rtc_get_time_once(&rtime);
+
+    do
+    {
+        rtc_set_once(date_time);
+        rtc_get_once(&rtime);
     } while (date_time->second != rtime.second);
 }
 
 void rtc_get_time(rtc_date_time_t *date_time)
 {
-    rtc_date_time_t time1, time2;
-    do {
-        _rtc_get_time_once(&time1);
-        _rtc_get_time_once(&time2);
-    } while (memcmp(&time1, &time2, sizeof(rtc_date_time_t)) != 0);
-    
-    memcpy(date_time, &time1, sizeof(rtc_date_time_t));
+    rtc_get_once(date_time);
 }

@@ -110,8 +110,8 @@
 | 1B | BCR、固件槽和 Bootloader 状态机 | 已完成 |
 | 2 | 串口协议与 Bootloader 自研驱动 | 已完成 |
 | 3 | WeatherClock 应用、任务、健康确认、Wi-Fi 与 OTA | 已完成 |
-| 4 | WeatherClock 自研底层驱动 | 进行中 |
-| 5 | C# 上位机、Python 工具和项目说明 | 未开始 |
+| 4 | WeatherClock 自研底层驱动 | 已完成 |
+| 5 | C# 上位机、Python 工具和项目说明 | 进行中 |
 | 6 | 完整主机/实板回归、发布与合并 | 未开始 |
 
 ## 6. 分阶段范围
@@ -215,6 +215,23 @@
 按 console、key、ESP-AT、存储、RTC、传感器和显示的依赖顺序分批处理。重点是硬件
 时序、缓冲区边界、ISR 上下文和共享总线所有权，不重新设计稳定驱动框架。
 
+完成情况：
+
+- 统一 AHT20、BL24C512、RTC、TIM6、LED、按键、USART1、ESP-AT 和 ST7789
+  驱动的文件说明、公开接口、命名、Include Guard 与关键硬件时序注释；
+- 将 AHT20 的返回式事件宏改为普通函数，所有 I2C 失败出口统一产生 STOP，并修复
+  状态读取失败被误判为测量完成的问题；
+- RTC 按 STM32 Calendar Shadow Registers 要求改为先读 TR、再读 DR，一次读取即
+  获得一致快照，删除依赖结构体比较的重复读取；
+- 删除没有调用者的 USART1 TX DMA、信号量和中断路径，保留实际使用的轮询日志
+  输出；同步移除闲置 DMA2 时钟，并将 Wi-Fi 状态接口统一为 ESP-AT 模块前缀；
+- 整理 ST7789 的 8 位寄存器和 16 位像素 DMA 边界，空数据不再启动零长度 DMA，
+  修复图像底边判断多拒绝两行的问题；
+- terra medium 只读审阅发现 USART1 在未注册回调时不读取 DR、会令 RXNE 持续触发
+  的 P2 问题；已改为 ISR 始终先消费字节，再按需调用回调；其余无 P0/P1/P3；
+- GCC 零错误零警告，天气解析和完整安全测试通过；WeatherClock 减少 516 B 至
+  157,680 B，Bootloader 保持 34,896 B。
+
 ### 阶段 5：主机工具与说明
 
 整理 C# 上位机和 Python 工具，使字段命名、协议术语和 Formal 文档一致；同步更新
@@ -244,6 +261,7 @@
 | 1B | BCR、固件槽和 Bootloader 状态机 | GCC、完整安全测试、terra 审阅通过 | 0 B；Bootloader 哈希变化 | 阶段 6 统一验证 | `refactor(boot): clarify A/B state and install flow` |
 | 2 | 串口协议和 Bootloader 自研驱动 | GCC、完整安全测试、terra 审阅通过 | BL +96 B；App 0 B且哈希不变 | 阶段 6 统一验证 | `refactor(boot): unify protocol and driver style` |
 | 3 | WeatherClock任务、Wi-Fi、OTA、UI和页面 | GCC、天气解析、完整安全测试、terra 审阅通过 | App +172 B；BL不变 | 阶段 6 统一验证 | `refactor(app): clarify tasks networking and UI flow` |
+| 4 | WeatherClock自研底层驱动 | GCC、天气解析、完整安全测试、terra 审阅通过 | App -516 B；BL不变 | 阶段 6 统一验证 | `refactor(drivers): clarify hardware and DMA flows` |
 
 ## 8. 待讨论问题
 

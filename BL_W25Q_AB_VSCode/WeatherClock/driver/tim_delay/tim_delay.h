@@ -1,13 +1,29 @@
-#ifndef __TIM_DELAY_H__
-#define __TIM_DELAY_H__
+/**
+ * @file tim_delay.h
+ * @brief TIM6 微秒时间基准与短时忙等待接口。
+ */
+
+#ifndef CLOCK_F407_APP_TIM_DELAY_H
+#define CLOCK_F407_APP_TIM_DELAY_H
 
 #include <stdint.h>
 
+/** @brief 初始化 1 MHz 自由运行的 TIM6 时间基准。 */
 void tim_delay_init(void);
+
+/** @brief 返回 TIM6 扩展后的微秒计数。 */
 uint64_t tim_now(void);
+
+/** @brief 返回自初始化后的微秒数。 */
 uint64_t tim_get_us(void);
+
+/** @brief 返回自初始化后的毫秒数。 */
 uint64_t tim_get_ms(void);
+
+/** @brief 忙等待指定微秒数。 */
 void tim_delay_us(uint32_t us);
+
+/** @brief 忙等待指定毫秒数。 */
 void tim_delay_ms(uint32_t ms);
 
-#endif /* __TIM_DELAY_H__ */
+#endif /* CLOCK_F407_APP_TIM_DELAY_H */

@@ -1,40 +1,42 @@
 /**
  * @file esp_at.c
- * @brief ESP32-C3 AT驱动及面向OTA的流式HTTPS接收。
+ * @brief ESP32-C3 AT 驱动及面向 OTA 的流式 HTTPS 接收。
  *
  * USART2 RX由循环DMA持续写入环形缓冲区，AT响应解析全部在任务上下文完成。
  * 普通天气命令和OTA共用一个互斥锁；流式HTTP从open到close独占ESP，防止
  * SNTP或天气查询插入同一条AT连接。
  */
 
+#include "esp_at.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
 #include "FreeRTOS.h"
-#include "task.h"
 #include "semphr.h"
 #include "stm32f4xx.h"
-#include "esp_at.h"
+#include "task.h"
 
 #ifndef ESP_AT_DEBUG
-#define ESP_AT_DEBUG             1
+#define ESP_AT_DEBUG              1
 #endif
-#define ESP_AT_DEFAULT_BAUD      115200u
-#define ESP_AT_RECOVERY_BAUD     921600u
-#define ESP_AT_COMMAND_ATTEMPTS  3u
-#define ESP_AT_BUSY_DELAY_MS     50u
-#define ESP_RX_RING_SIZE         2048u
-#define ESP_RESPONSE_SIZE        1024u
-#define ESP_COMMAND_SIZE         512u
-#define ESP_HTTP_HEADER_SIZE     1024u
-#define ESP_HTTP_HEADER_PULL     256u
-#define ESP_HTTP_PULL_SIZE       1024u
-#define ESP_HTTP_HOST_SIZE       96u
-#define ESP_HTTP_PATH_SIZE       320u
-#define ESP_RX_DMA_STREAM        DMA1_Stream5
-#define ESP_TX_DMA_STREAM        DMA1_Stream6
-#define ESP_USART_DMA_CHANNEL    DMA_Channel_4
+#define ESP_AT_DEFAULT_BAUD       115200u
+#define ESP_AT_RECOVERY_BAUD      921600u
+#define ESP_AT_COMMAND_ATTEMPTS   3u
+#define ESP_AT_BUSY_DELAY_MS      50u
+#define ESP_RX_RING_SIZE          2048u
+#define ESP_RESPONSE_SIZE         1024u
+#define ESP_COMMAND_SIZE          512u
+#define ESP_HTTP_HEADER_SIZE      1024u
+#define ESP_HTTP_HEADER_PULL      256u
+#define ESP_HTTP_PULL_SIZE        1024u
+#define ESP_HTTP_HOST_SIZE        96u
+#define ESP_HTTP_PATH_SIZE        320u
+#define ESP_RX_DMA_STREAM         DMA1_Stream5
+#define ESP_TX_DMA_STREAM         DMA1_Stream6
+#define ESP_USART_DMA_CHANNEL     DMA_Channel_4
 
 typedef enum
 {
@@ -407,7 +409,7 @@ bool esp_at_init(void)
     if (at_mutex == NULL)
     {
         at_mutex = xSemaphoreCreateMutex();
-        configASSERT(at_mutex);
+        configASSERT(at_mutex != NULL);
     }
 
     esp_at_lowlevel_init();
@@ -526,7 +528,7 @@ out:
     return ok;
 }
 
-bool wifi_is_connected(void)
+bool esp_at_wifi_is_connected(void)
 {
     esp_wifi_info_t info;
 
