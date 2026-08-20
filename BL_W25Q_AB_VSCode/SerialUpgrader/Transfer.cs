@@ -64,9 +64,11 @@ public sealed class Transfer : IDisposable
     private const int PacketCrcSize = 2;
     private const int PacketHeaderOffset = 0;
     private const int PacketOpcodeOffset = 1;
-    private const int PacketErrorCodeOffset = 2;
-    private const int PacketLengthOffset = 3;
-    private const int PacketPayloadOffset = 5;
+    private const int RequestLengthOffset = 2;
+    private const int RequestPayloadOffset = 4;
+    private const int ResponseErrorCodeOffset = 2;
+    private const int ResponseLengthOffset = 3;
+    private const int ResponsePayloadOffset = 5;
 
     private const int DefaultTimeoutSeconds = 1;
     private const int W25ProgramParameterHeaderSize = 7;
@@ -233,15 +235,15 @@ public sealed class Transfer : IDisposable
                         break;
 
                     case ResponseState.ErrorCode:
-                        errorCode = (ErrorCode)frame[PacketErrorCodeOffset];
+                        errorCode = (ErrorCode)frame[ResponseErrorCodeOffset];
                         state = ResponseState.Length;
                         break;
 
                     case ResponseState.Length:
-                        if (frame.Count == PacketPayloadOffset)
+                        if (frame.Count == ResponsePayloadOffset)
                         {
-                            payloadLength = frame[PacketLengthOffset] |
-                                            frame[PacketLengthOffset + 1] << 8;
+                            payloadLength = frame[ResponseLengthOffset] |
+                                            frame[ResponseLengthOffset + 1] << 8;
                             state = payloadLength > 0
                                 ? ResponseState.Payload
                                 : ResponseState.Crc16;
@@ -249,16 +251,16 @@ public sealed class Transfer : IDisposable
                         break;
 
                     case ResponseState.Payload:
-                        if (frame.Count == PacketPayloadOffset + payloadLength)
+                        if (frame.Count == ResponsePayloadOffset + payloadLength)
                             state = ResponseState.Crc16;
                         break;
 
                     case ResponseState.Crc16:
-                        if (frame.Count == PacketPayloadOffset + payloadLength + PacketCrcSize)
+                        if (frame.Count == ResponsePayloadOffset + payloadLength + PacketCrcSize)
                         {
                             byte[] packet = frame.ToArray();
                             ushort expectedCrc = BinaryPrimitives.ReadUInt16LittleEndian(
-                                packet.AsSpan(PacketPayloadOffset + payloadLength));
+                                packet.AsSpan(ResponsePayloadOffset + payloadLength));
                             ushort actualCrc = CRC.CRC16(packet.AsSpan(0,
                                 packet.Length - PacketCrcSize));
                             if (actualCrc != expectedCrc)
@@ -269,7 +271,7 @@ public sealed class Transfer : IDisposable
                             }
 
                             byte[] payload = packet
-                                .AsSpan(PacketPayloadOffset, payloadLength)
+                                .AsSpan(ResponsePayloadOffset, payloadLength)
                                 .ToArray();
                             Trace.WriteLine(
                                 $"packet received: opcode={opcode}, length={payloadLength}");
@@ -292,16 +294,16 @@ public sealed class Transfer : IDisposable
     }
 
     /// <summary>按小端协议布局构造一帧请求。</summary>
-    private static byte[] BuildPacket(Opcode opcode, byte[]? payload)
+    internal static byte[] BuildRequestPacket(byte opcode, byte[]? payload)
     {
         int payloadLength = payload?.Length ?? 0;
-        byte[] packet = new byte[PacketPayloadOffset + payloadLength + PacketCrcSize];
+        byte[] packet = new byte[RequestPayloadOffset + payloadLength + PacketCrcSize];
 
         packet[PacketHeaderOffset] = PacketRequestHeader;
-        packet[PacketOpcodeOffset] = (byte)opcode;
+        packet[PacketOpcodeOffset] = opcode;
         BinaryPrimitives.WriteUInt16LittleEndian(
-            packet.AsSpan(PacketLengthOffset), checked((ushort)payloadLength));
-        payload?.CopyTo(packet, PacketPayloadOffset);
+            packet.AsSpan(RequestLengthOffset), checked((ushort)payloadLength));
+        payload?.CopyTo(packet, RequestPayloadOffset);
 
         ushort crc = CRC.CRC16(packet.AsSpan(0, packet.Length - PacketCrcSize));
         BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(packet.Length - PacketCrcSize), crc);
@@ -320,7 +322,7 @@ public sealed class Transfer : IDisposable
 
         try
         {
-            byte[] packet = BuildPacket(opcode, payload);
+            byte[] packet = BuildRequestPacket((byte)opcode, payload);
             while (dataChannel.Reader.TryRead(out _))
             {
             }
