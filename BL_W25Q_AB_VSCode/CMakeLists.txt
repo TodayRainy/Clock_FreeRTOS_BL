@@ -8,6 +8,12 @@ set(CMAKE_C_EXTENSIONS ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
+find_program(HOST_GCC_EXECUTABLE NAMES gcc REQUIRED)
+
+set(_HOST_EXECUTABLE_SUFFIX "")
+if(CMAKE_HOST_WIN32)
+    set(_HOST_EXECUTABLE_SUFFIX ".exe")
+endif()
 
 # DEV构建在首次配置时生成仅供本机使用的签名密钥；密钥目录由Git忽略。
 # PROD构建必须显式提供外部密钥，避免测试密钥被误用于正式固件。
@@ -29,7 +35,7 @@ endif()
 
 # 普通发布序号只决定自动 OTA 的先后顺序。旧 XBIN 的保留字段为0，因此新方案
 # 从1开始即可完成一次平滑迁移；日常每发布一个不同固件都必须递增。
-set(FIRMWARE_RELEASE_SEQUENCE "1" CACHE STRING
+set(FIRMWARE_RELEASE_SEQUENCE "2" CACHE STRING
     "Monotonic release sequence used by automatic OTA")
 if(NOT FIRMWARE_RELEASE_SEQUENCE MATCHES "^[0-9]+$" OR
    FIRMWARE_RELEASE_SEQUENCE LESS 1 OR
@@ -38,7 +44,7 @@ if(NOT FIRMWARE_RELEASE_SEQUENCE MATCHES "^[0-9]+$" OR
 endif()
 
 # APP_VERSION 与 XBIN Header 共用同一字符串，串口日志和固件头不会漂移。
-set(WEATHERCLOCK_VERSION "v1.7.0-ota-ordering" CACHE STRING
+set(WEATHERCLOCK_VERSION "v1.8.0-encrypted" CACHE STRING
     "WeatherClock display version stored in the signed XBIN header")
 if(WEATHERCLOCK_VERSION STREQUAL "" OR WEATHERCLOCK_VERSION MATCHES "[^ -~]")
     message(FATAL_ERROR "WEATHERCLOCK_VERSION must be non-empty printable ASCII")
@@ -54,39 +60,56 @@ find_program(FIRMWARE_OPENSSL_EXECUTABLE
 
 set(_DEV_SIGNING_KEY "${CMAKE_SOURCE_DIR}/.keys/dev_firmware_private.pem")
 set(_DEV_VERIFY_KEY "${CMAKE_SOURCE_DIR}/.keys/dev_firmware_public.pem")
+set(_DEV_ENCRYPTION_KEY "${CMAKE_SOURCE_DIR}/.keys/dev_firmware_aes256.key")
 if(BOOT_SECURITY_PROFILE STREQUAL "DEV")
     set(FIRMWARE_SIGNING_KEY "${_DEV_SIGNING_KEY}"
         CACHE FILEPATH "PEM private key used to sign firmware")
     set(FIRMWARE_VERIFY_KEY "${_DEV_VERIFY_KEY}"
         CACHE FILEPATH "PEM public key compiled into the Bootloader")
+    set(FIRMWARE_ENCRYPTION_KEY "${_DEV_ENCRYPTION_KEY}"
+        CACHE FILEPATH "Raw 32-byte AES key used for encrypted XBIN images")
     set(_CREATE_DEV_KEY --create)
+    set(_CREATE_DEV_ENCRYPTION_KEY --create-encryption-key)
     set(FIRMWARE_PROFILE_DEFINITION FIRMWARE_BUILD_PROFILE_DEV=1)
 else()
     set(FIRMWARE_SIGNING_KEY "" CACHE FILEPATH "External PROD firmware signing key")
     set(FIRMWARE_VERIFY_KEY "" CACHE FILEPATH "External PROD firmware verification key")
-    if(NOT FIRMWARE_SIGNING_KEY OR NOT FIRMWARE_VERIFY_KEY)
+    set(FIRMWARE_ENCRYPTION_KEY "" CACHE FILEPATH "External PROD 32-byte AES key")
+    if(NOT FIRMWARE_SIGNING_KEY OR NOT FIRMWARE_VERIFY_KEY OR
+       NOT FIRMWARE_ENCRYPTION_KEY)
         message(FATAL_ERROR
             "PROD requires -DFIRMWARE_SIGNING_KEY=<private.pem> and "
-            "-DFIRMWARE_VERIFY_KEY=<public.pem>")
+            "-DFIRMWARE_VERIFY_KEY=<public.pem> and "
+            "-DFIRMWARE_ENCRYPTION_KEY=<aes256.key>")
     endif()
     if("${FIRMWARE_SIGNING_KEY}" STREQUAL "${_DEV_SIGNING_KEY}" OR
        "${FIRMWARE_VERIFY_KEY}" STREQUAL "${_DEV_VERIFY_KEY}")
         message(FATAL_ERROR
             "PROD refuses the auto-generated DEV key paths; provide an external key pair")
     endif()
+    if("${FIRMWARE_ENCRYPTION_KEY}" STREQUAL "${_DEV_ENCRYPTION_KEY}")
+        message(FATAL_ERROR
+            "PROD refuses the auto-generated DEV encryption key path")
+    endif()
     set(_CREATE_DEV_KEY)
+    set(_CREATE_DEV_ENCRYPTION_KEY)
     set(FIRMWARE_PROFILE_DEFINITION FIRMWARE_BUILD_PROFILE_PROD=1)
 endif()
 
 set(FIRMWARE_GENERATED_DIR "${CMAKE_BINARY_DIR}/generated")
 set(FIRMWARE_PUBLIC_KEY_HEADER "${FIRMWARE_GENERATED_DIR}/firmware_public_key.h")
+set(FIRMWARE_ENCRYPTION_KEY_HEADER
+    "${FIRMWARE_GENERATED_DIR}/firmware_encryption_key.h")
 execute_process(
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_SOURCE_DIR}/tools/firmware_crypto.py
             --openssl ${FIRMWARE_OPENSSL_EXECUTABLE}
             --private-key ${FIRMWARE_SIGNING_KEY}
             --public-key ${FIRMWARE_VERIFY_KEY}
             --output-header ${FIRMWARE_PUBLIC_KEY_HEADER}
+            --encryption-key ${FIRMWARE_ENCRYPTION_KEY}
+            --output-encryption-header ${FIRMWARE_ENCRYPTION_KEY_HEADER}
             ${_CREATE_DEV_KEY}
+            ${_CREATE_DEV_ENCRYPTION_KEY}
     RESULT_VARIABLE _KEY_PREPARE_RESULT
     OUTPUT_VARIABLE _KEY_PREPARE_OUTPUT
     ERROR_VARIABLE _KEY_PREPARE_ERROR
@@ -97,6 +120,44 @@ endif()
 string(STRIP "${_KEY_PREPARE_OUTPUT}" _KEY_PREPARE_OUTPUT)
 message(STATUS "Security profile: ${BOOT_SECURITY_PROFILE}")
 message(STATUS "${_KEY_PREPARE_OUTPUT}")
+
+# 主机打包器与 STM32 端共用同一份 Mbed TLS AES/GCM 源码。工具只接受文件参数，
+# 不把密钥写入命令行或构建日志。
+set(FIRMWARE_MBEDTLS_DIR
+    "${CMAKE_SOURCE_DIR}/STM32F4_Bootloader/third_lib/mbedtls")
+# 当前 MinGW 链接器不能可靠创建中文绝对路径下的 EXE。Windows 上把纯主机
+# 工具放到 LOCALAPPDATA；固件产物仍全部保留在工程 build 目录。
+if(CMAKE_HOST_WIN32 AND DEFINED ENV{LOCALAPPDATA})
+    set(FIRMWARE_HOST_TOOL_DIR "$ENV{LOCALAPPDATA}/ClockF407Tools")
+else()
+    set(FIRMWARE_HOST_TOOL_DIR "${CMAKE_BINARY_DIR}/host")
+endif()
+set(FIRMWARE_AES_TOOL
+    "${FIRMWARE_HOST_TOOL_DIR}/firmware_aes_gcm_tool${_HOST_EXECUTABLE_SUFFIX}")
+set(FIRMWARE_AES_TOOL_SOURCES
+    ${CMAKE_SOURCE_DIR}/tools/firmware_aes_gcm_tool.c
+    ${FIRMWARE_MBEDTLS_DIR}/library/aes.c
+    ${FIRMWARE_MBEDTLS_DIR}/library/gcm.c
+    ${FIRMWARE_MBEDTLS_DIR}/library/block_cipher.c
+    ${FIRMWARE_MBEDTLS_DIR}/library/constant_time.c
+    ${FIRMWARE_MBEDTLS_DIR}/library/platform_util.c
+    ${FIRMWARE_MBEDTLS_DIR}/library/platform.c
+)
+add_custom_command(
+    OUTPUT ${FIRMWARE_AES_TOOL}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${FIRMWARE_HOST_TOOL_DIR}
+    COMMAND ${HOST_GCC_EXECUTABLE}
+            -std=c11 -O2 -Wall -Wextra -DMBEDTLS_PLATFORM_C
+            -I${FIRMWARE_MBEDTLS_DIR}/include
+            -I${FIRMWARE_MBEDTLS_DIR}/library
+            ${FIRMWARE_AES_TOOL_SOURCES}
+            -o ${FIRMWARE_AES_TOOL}
+    DEPENDS ${FIRMWARE_AES_TOOL_SOURCES}
+            ${FIRMWARE_MBEDTLS_DIR}/include/mbedtls/mbedtls_config.h
+    COMMENT "Building host AES-256-GCM packaging tool"
+    VERBATIM
+)
+add_custom_target(firmware_aes_gcm_tool DEPENDS ${FIRMWARE_AES_TOOL})
 
 # 两个固件使用同一颗 Cortex-M4F。把 ABI 参数集中在这里，避免子工程漂移。
 add_library(stm32f407_compile_options INTERFACE)
@@ -138,6 +199,8 @@ add_custom_target(validate_images
             WeatherClock/stm32f407_upgrade.xbin
             ${FIRMWARE_VERIFY_KEY}
             --openssl ${FIRMWARE_OPENSSL_EXECUTABLE}
+            --aes-tool ${FIRMWARE_AES_TOOL}
+            --encryption-key ${FIRMWARE_ENCRYPTION_KEY}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     DEPENDS bootloader weatherclock
     COMMENT "Validating STM32 vectors, Flash ranges and XBIN header"
@@ -145,12 +208,7 @@ add_custom_target(validate_images
 
 # 若开发机有本地GCC，再把Bootloader实际使用的SHA-256和micro-ecc源码编译为
 # 宿主机程序。这样不仅验证OpenSSL工具链，还能及早发现两端字节序或实现漂移。
-find_program(HOST_GCC_EXECUTABLE NAMES gcc)
 if(HOST_GCC_EXECUTABLE)
-    set(_HOST_EXECUTABLE_SUFFIX "")
-    if(CMAKE_HOST_WIN32)
-        set(_HOST_EXECUTABLE_SUFFIX ".exe")
-    endif()
     file(RELATIVE_PATH _FIRMWARE_GENERATED_RELATIVE
          "${CMAKE_SOURCE_DIR}" "${FIRMWARE_GENERATED_DIR}")
     file(RELATIVE_PATH _FIRMWARE_BUILD_RELATIVE
@@ -179,12 +237,41 @@ if(HOST_GCC_EXECUTABLE)
                 -o ${_NATIVE_CRYPTO_TEST}
         COMMAND ${_NATIVE_CRYPTO_TEST}
                 ${_FIRMWARE_BUILD_RELATIVE}/WeatherClock/stm32f407_upgrade.xbin
+                ${_FIRMWARE_BUILD_RELATIVE}/WeatherClock/stm32f407.bin
         DEPENDS validate_images
         COMMENT "Running Bootloader SHA-256/ECDSA code on the host"
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         VERBATIM
     )
-add_custom_target(test_firmware_security_policy
+    set(_NATIVE_ENCRYPTION_TEST
+        ".cache/native_encryption_selftest${_HOST_EXECUTABLE_SUFFIX}")
+    add_custom_target(test_firmware_encryption_c
+        COMMAND ${CMAKE_COMMAND} -E make_directory .cache
+        COMMAND ${HOST_GCC_EXECUTABLE}
+                -std=c11 -O2 -Wall -Wextra -DMBEDTLS_PLATFORM_C
+                -Ishared
+                -ISTM32F4_Bootloader/app
+                -ISTM32F4_Bootloader/third_lib/mbedtls/include
+                -ISTM32F4_Bootloader/third_lib/mbedtls/library
+                -I${_FIRMWARE_GENERATED_RELATIVE}
+                tools/native_encryption_selftest.c
+                STM32F4_Bootloader/app/firmware_decryption.c
+                STM32F4_Bootloader/third_lib/mbedtls/library/aes.c
+                STM32F4_Bootloader/third_lib/mbedtls/library/gcm.c
+                STM32F4_Bootloader/third_lib/mbedtls/library/block_cipher.c
+                STM32F4_Bootloader/third_lib/mbedtls/library/constant_time.c
+                STM32F4_Bootloader/third_lib/mbedtls/library/platform_util.c
+                STM32F4_Bootloader/third_lib/mbedtls/library/platform.c
+                -o ${_NATIVE_ENCRYPTION_TEST}
+        COMMAND ${_NATIVE_ENCRYPTION_TEST}
+                ${_FIRMWARE_BUILD_RELATIVE}/WeatherClock/stm32f407_upgrade.xbin
+                ${_FIRMWARE_BUILD_RELATIVE}/WeatherClock/stm32f407.bin
+        DEPENDS validate_images
+        COMMENT "Running Bootloader streaming AES-256-GCM code on the host"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        VERBATIM
+    )
+    add_custom_target(test_firmware_security_policy
         COMMAND ${CMAKE_COMMAND} -E make_directory .cache
         COMMAND ${HOST_GCC_EXECUTABLE}
                 -std=c11 -O2 -Wall -Wextra -Ishared
@@ -228,6 +315,11 @@ else()
                 "Host GCC not found; native firmware crypto self-test skipped"
         DEPENDS validate_images
     )
+    add_custom_target(test_firmware_encryption_c
+        COMMAND ${CMAKE_COMMAND} -E echo
+                "Host GCC not found; native firmware encryption test skipped"
+        DEPENDS validate_images
+    )
     add_custom_target(test_firmware_security_policy
         COMMAND ${CMAKE_COMMAND} -E echo
                 "Host GCC not found; native firmware policy test skipped"
@@ -258,8 +350,11 @@ add_custom_target(test_firmware_security
             WeatherClock/stm32f407_upgrade.xbin
             ${FIRMWARE_VERIFY_KEY}
             --openssl ${FIRMWARE_OPENSSL_EXECUTABLE}
+            --aes-tool ${FIRMWARE_AES_TOOL}
+            --encryption-key ${FIRMWARE_ENCRYPTION_KEY}
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-    DEPENDS test_firmware_crypto_c test_firmware_security_policy
+    DEPENDS test_firmware_crypto_c test_firmware_encryption_c
+            test_firmware_security_policy
             test_resume_algorithm test_ota_contract
-    COMMENT "Testing rejection of forged signed firmware"
+    COMMENT "Testing rejection of forged signed/encrypted firmware"
 )

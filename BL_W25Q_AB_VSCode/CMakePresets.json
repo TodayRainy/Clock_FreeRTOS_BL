@@ -36,7 +36,8 @@
         "CMAKE_BUILD_TYPE": "Release",
         "BOOT_SECURITY_PROFILE": "PROD",
         "FIRMWARE_SIGNING_KEY": "$env{CLOCK_FW_SIGNING_KEY}",
-        "FIRMWARE_VERIFY_KEY": "$env{CLOCK_FW_VERIFY_KEY}"
+        "FIRMWARE_VERIFY_KEY": "$env{CLOCK_FW_VERIFY_KEY}",
+        "FIRMWARE_ENCRYPTION_KEY": "$env{CLOCK_FW_ENCRYPTION_KEY}"
       }
     }
   ],

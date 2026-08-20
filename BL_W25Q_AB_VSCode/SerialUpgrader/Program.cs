@@ -57,6 +57,9 @@ namespace SerialUpgrader
             Console.WriteLine($"XBIN v{header.FormatVersion}, Key ID 0x{header.KeyId:X8}");
             Console.WriteLine($"安全版本: {header.SecurityVersion}");
             Console.WriteLine($"SHA-256 {Convert.ToHexString(header.ImageSha256)}");
+            Console.WriteLine(header.IsEncrypted
+                ? $"加密 AES-256-GCM (key 0x{header.EncryptionKeyId:X8})"
+                : "加密 未启用");
 
             using Transfer transfer = new(port);
             transfer.OnEvent += Console.WriteLine;

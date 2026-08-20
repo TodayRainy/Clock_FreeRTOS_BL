@@ -1,0 +1,7 @@
+si SWD
+speed 1000
+connect
+h
+verifybin ../.device-backups/stm32f407_encrypted_v3_5_final_20260820.bin, 0x08000000
+g
+exit

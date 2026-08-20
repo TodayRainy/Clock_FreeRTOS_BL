@@ -9,25 +9,28 @@
 - VS Code/GCC 迁移、构建、调试和实测说明：[`VSCODE_GCC_MIGRATION.md`](VSCODE_GCC_MIGRATION.md)
 - 当前代码架构、状态机、协议与维护指南：[`CODE_GUIDE.md`](CODE_GUIDE.md)
 - 固件签名、看门狗和 DEV/PROD 权限说明：[`SECURE_BOOT_GUIDE.md`](SECURE_BOOT_GUIDE.md)
+- XBIN v3 加密格式、密钥和迁移说明：[`ENCRYPTED_FIRMWARE_GUIDE.md`](ENCRYPTED_FIRMWARE_GUIDE.md)
 - 断点续传协议、掉电边界和实测说明：[`RESUMABLE_UPGRADE_GUIDE.md`](RESUMABLE_UPGRADE_GUIDE.md)
 - COS OTA、后台任务、发布流程和掉电续传说明：[`OTA_GUIDE.md`](OTA_GUIDE.md)
 - `v1.6.6` OTA版本的代码、产物、测试与已知边界：[`RELEASE_NOTES_v1.6.6.md`](RELEASE_NOTES_v1.6.6.md)
 - `v1.7.0`发布序号、旧包拒绝和OTA冗余清理：[`RELEASE_NOTES_v1.7.0.md`](RELEASE_NOTES_v1.7.0.md)
+- `v1.8.x`加密XBIN、USART3/OTA实板回归：[`RELEASE_NOTES_v1.8.0.md`](RELEASE_NOTES_v1.8.0.md)
 - 设计、测试、使用和 ST-Link 救援说明：[`AB_BOOTLOADER_REPORT.md`](AB_BOOTLOADER_REPORT.md)
 - 初始及最终安全基线：[`SAFETY_BASELINE.md`](SAFETY_BASELINE.md)
 
 正式升级只写非活动 W25Q128 槽，Bootloader 本身不支持在线自更新。
 
-当前 Bootloader 为 `v3.4.0-ota-ordering-dev/prod`。它保留原有2 Mbps、USART3 DMA、
-8 KiB流水传输和W25Q SPI DMA，同时把XBIN升级为签名格式v2：Bootloader必须用
-内置公钥通过ECDSA-P256验签，并复核应用SHA-256、CRC32和向量表后才允许安装。
+当前开发版 Bootloader 为 `v3.5.0-encrypted-dev/prod`。它保留原有2 Mbps、
+USART3 DMA、8 KiB流水传输和W25Q SPI DMA，并接受明文签名XBIN v2与
+AES-256-GCM加密XBIN v3。Bootloader先认证并解密v3密文，再用内置公钥完成
+ECDSA-P256验签，并复核明文SHA-256、CRC32和向量表后才允许安装。
 Bootloader与应用共用IWDG，Trial只有在核心板级/显示初始化完成并继续稳定调度
 5秒后才会确认并提高安全版本下限。普通升级禁止安装低于下限的固件；长按KEY2
 可人工安装合法签名的旧版本，但不会降低下限。PROD的原始维护命令也要求KEY2。
 外部槽上传默认按4 KiB CRC扫描已写数据，从安全断点继续；旧Bootloader不支持
 新命令时自动回退完整升级，用户也可以显式选择强制完整重写。
 
-WeatherClock还支持从腾讯云COS检查签名XBIN：首次本地温湿度和在线天气均刷新
+WeatherClock还支持从腾讯云COS检查签名加密XBIN：首次本地温湿度和在线天气均刷新
 成功后，再延迟60秒检查，以后每24小时检查一次；发现发布序号更大的版本时直接
 下载、校验并暂存到非活动槽，但不会自动复位。USART1输入`u`可立即执行同样
 流程。OTA下载每32 KiB保存一次进度，完成后三颗板载LED常亮，用户按RESET才由
@@ -53,8 +56,9 @@ cmake --build --preset security-test-release --parallel
 都必须递增；自动 OTA 拒绝更小的序号，也拒绝“相同序号、不同 SHA”的替换包。
 版本字符串仍用于显示，USART3/KEY2人工维护仍可主动安装旧版本。
 
-第一次DEV配置会在被Git忽略的`.keys/`下生成本机开发密钥。正式发布必须使用
-`release-prod`和外部提供的密钥，不能把DEV私钥或PROD私钥提交到仓库。
+第一次DEV配置会在被Git忽略的`.keys/`下生成本机签名密钥和32字节AES开发密钥。
+正式发布必须使用`release-prod`和外部提供的签名/加密密钥，私钥和AES密钥都不能
+提交到仓库。
 
 命令行升级：
 
@@ -80,10 +84,11 @@ dotnet .\SerialUpgrader\bin\Release\net8.0-windows\SerialUpgrader.dll `
 持续运行以及11.9%/51.7%/96.7%三次传输中断恢复测试；板载最终状态与可恢复的
 512 KiB镜像记录在`SAFETY_BASELINE.md`。
 
-最新OTA实板版本为`v1.7.0-ota-ordering / release 1`。它已从真实 release 0 固件
-完成联网升级和Trial确认，并分别验证“同序号同SHA不重复下载”和“更小序号旧包
-直接忽略”。当前清单保存在`ota/manifest.json`，详细数据见
-`RELEASE_NOTES_v1.7.0.md`；v1.6.6的断点续传与28 KiB/s实测结论继续有效。
+最新已确认的实板版本为`v1.8.1-encrypted-ota-test / release 3`，Bootloader为
+`v3.5.0-encrypted-dev`。release 2先经USART3加密升级完成，release 3再经COS
+加密OTA完成，两个外部槽和最终BCR均通过全量检查。当前公网清单保存在
+`ota/manifest.json`，详细数据见`RELEASE_NOTES_v1.8.0.md`；v1.6.6的断点续传
+与28 KiB/s实测结论继续有效。
 
 每个配置的 ELF、HEX、BIN 和 XBIN 位于 `build/debug` 或 `build/release`，不会
 相互覆盖。应用仍必须通过 XBIN/A-B 流程安装；不要把裸应用 BIN 当作正常升级包。

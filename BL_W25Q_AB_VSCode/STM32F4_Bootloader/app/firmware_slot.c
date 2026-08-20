@@ -3,18 +3,29 @@
  * @brief 内部固件和外部A/B槽的校验、安装与快照实现。
  */
 
+#include <string.h>
 #include "w25q.h"
 #include "stm32_flash.h"
 #include "crc32.h"
 #include "sha256.h"
 #include "watchdog.h"
 #include "firmware_auth.h"
+#include "firmware_decryption.h"
+#include "firmware_encryption_format.h"
 #include "magic_header.h"
 #include "firmware_slot.h"
 
-#define INSTALL_BUFFER_SIZE 4096u
+#define INSTALL_CHUNK_SIZE 4096u
+#define INSTALL_BUFFER_SIZE (INSTALL_CHUNK_SIZE + 16u)
 
 static uint8_t install_buffer[INSTALL_BUFFER_SIZE];
+
+typedef enum
+{
+    SLOT_DATA_PLAINTEXT,
+    SLOT_DATA_ENCRYPTED,
+    SLOT_DATA_INVALID,
+} slot_data_encoding_t;
 
 #define SRAM_START     0x20000000u
 #define SRAM_END       0x20020000u
@@ -33,6 +44,19 @@ static uint32_t read_u32_le(const uint8_t *data)
            ((uint32_t)data[1] << 8) |
            ((uint32_t)data[2] << 16) |
            ((uint32_t)data[3] << 24);
+}
+
+/** @brief 读取外部槽的可选加密描述，并确认它使用本 Bootloader 的密钥。 */
+static slot_data_encoding_t slot_data_encoding(
+    uint8_t slot, xbin_encryption_header_t *encryption)
+{
+    w25q_read((w25q_chip_t)slot, XBIN_ENCRYPTION_HEADER_OFFSET,
+              (uint8_t *)encryption, sizeof(*encryption));
+    if (encryption->magic != XBIN_ENCRYPTION_MAGIC)
+        return SLOT_DATA_PLAINTEXT;
+    if (!magic_encryption_header_validate(encryption))
+        return SLOT_DATA_INVALID;
+    return SLOT_DATA_ENCRYPTED;
 }
 
 /**
@@ -68,8 +92,8 @@ static bool internal_data_valid(const magic_header_t *header)
     sha256_init(&sha);
     while (remaining)
     {
-        uint32_t chunk = remaining > INSTALL_BUFFER_SIZE ?
-                         INSTALL_BUFFER_SIZE : remaining;
+        uint32_t chunk = remaining > INSTALL_CHUNK_SIZE ?
+                         INSTALL_CHUNK_SIZE : remaining;
         crc_state = crc32_update(crc_state, data, chunk);
         sha256_update(&sha, data, chunk);
         watchdog_refresh();
@@ -119,17 +143,33 @@ bool firmware_slot_load_header(uint8_t slot, magic_header_t *header)
  */
 bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
 {
+    xbin_encryption_header_t encryption;
+    slot_data_encoding_t encoding;
+    firmware_decryption_t decrypt_context;
     uint32_t address;
     uint32_t remaining;
     uint32_t chunk;
     uint32_t state;
+    uint32_t plaintext_length = 0;
     uint8_t digest[SHA256_DIGEST_SIZE];
-    uint32_t initial_sp = 0;
-    uint32_t reset_handler = 0;
+    uint8_t vectors[8] = { 0 };
+    uint32_t vector_length = 0;
     sha256_context_t sha;
+    bool decrypt_active = false;
+    bool ok = false;
 
     if (slot >= W25Q_CHIP_COUNT)
         return false;
+
+    encoding = slot_data_encoding(slot, &encryption);
+    if (encoding == SLOT_DATA_INVALID)
+        return false;
+    if (encoding == SLOT_DATA_ENCRYPTED)
+    {
+        if (!firmware_decryption_begin(&decrypt_context, header, &encryption))
+            return false;
+        decrypt_active = true;
+    }
 
     address = header->data_offset;
     remaining = header->data_length;
@@ -137,23 +177,66 @@ bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
     sha256_init(&sha);
     while (remaining)
     {
-        chunk = remaining > sizeof(install_buffer) ? sizeof(install_buffer) : remaining;
+        size_t output_length;
+
+        chunk = remaining > INSTALL_CHUNK_SIZE ? INSTALL_CHUNK_SIZE : remaining;
         w25q_read((w25q_chip_t)slot, address, install_buffer, chunk);
-        if (address == header->data_offset && chunk >= 8u)
+        if (encoding == SLOT_DATA_ENCRYPTED)
         {
-            initial_sp = read_u32_le(install_buffer);
-            reset_handler = read_u32_le(install_buffer + 4u);
+            if (!firmware_decryption_update(&decrypt_context, install_buffer,
+                                            chunk, sizeof(install_buffer),
+                                            &output_length))
+                goto out;
         }
-        state = crc32_update(state, install_buffer, chunk);
-        sha256_update(&sha, install_buffer, chunk);
+        else
+        {
+            output_length = chunk;
+        }
+
+        if (vector_length < sizeof(vectors))
+        {
+            uint32_t copy = (uint32_t)output_length;
+            if (copy > sizeof(vectors) - vector_length)
+                copy = sizeof(vectors) - vector_length;
+            memcpy(vectors + vector_length, install_buffer, copy);
+            vector_length += copy;
+        }
+        state = crc32_update(state, install_buffer, (uint32_t)output_length);
+        sha256_update(&sha, install_buffer, (uint32_t)output_length);
+        plaintext_length += (uint32_t)output_length;
         watchdog_refresh();
         address += chunk;
         remaining -= chunk;
     }
+
+    if (encoding == SLOT_DATA_ENCRYPTED)
+    {
+        size_t output_length;
+
+        if (!firmware_decryption_finish(&decrypt_context, &encryption,
+                                        install_buffer, sizeof(install_buffer),
+                                        &output_length))
+        {
+            decrypt_active = false;
+            goto out;
+        }
+        decrypt_active = false;
+        state = crc32_update(state, install_buffer, (uint32_t)output_length);
+        sha256_update(&sha, install_buffer, (uint32_t)output_length);
+        plaintext_length += (uint32_t)output_length;
+    }
     sha256_final(&sha, digest);
-    return crc32_end(state) == header->data_crc32 &&
-           firmware_hash_matches(header, digest) &&
-           application_vector_valid(initial_sp, reset_handler, header);
+
+    ok = plaintext_length == header->data_length && vector_length == sizeof(vectors) &&
+         crc32_end(state) == header->data_crc32 &&
+         firmware_hash_matches(header, digest) &&
+         application_vector_valid(read_u32_le(vectors), read_u32_le(vectors + 4u),
+                                  header);
+
+out:
+    if (decrypt_active)
+        firmware_decryption_abort(&decrypt_context);
+    return ok;
 }
 
 /**
@@ -214,11 +297,16 @@ bool firmware_slot_find_resume_offset(uint8_t slot, uint32_t data_length,
  */
 bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
 {
+    xbin_encryption_header_t encryption;
+    slot_data_encoding_t encoding;
+    firmware_decryption_t decrypt_context;
     magic_header_t header;
     uint32_t source;
     uint32_t destination;
     uint32_t remaining;
     uint32_t chunk;
+    uint32_t written = 0;
+    bool decrypt_active = false;
     bool ok = false;
 
     if (slot >= W25Q_CHIP_COUNT || verified_header == NULL)
@@ -229,6 +317,16 @@ bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
      * 的栈对象，同时省去对同一份约300 KiB固件的第二次连续读取。
      */
     header = *verified_header;
+
+    encoding = slot_data_encoding(slot, &encryption);
+    if (encoding == SLOT_DATA_INVALID)
+        return false;
+    if (encoding == SLOT_DATA_ENCRYPTED)
+    {
+        if (!firmware_decryption_begin(&decrypt_context, &header, &encryption))
+            return false;
+        decrypt_active = true;
+    }
 
     stm32_flash_unlock();
 
@@ -242,17 +340,52 @@ bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
     remaining = header.data_length;
     while (remaining)
     {
-        chunk = remaining > sizeof(install_buffer) ? sizeof(install_buffer) : remaining;
+        size_t output_length;
+
+        chunk = remaining > INSTALL_CHUNK_SIZE ? INSTALL_CHUNK_SIZE : remaining;
         w25q_read((w25q_chip_t)slot, source, install_buffer, chunk);
-        if (!stm32_flash_program(destination, install_buffer, chunk))
+        if (encoding == SLOT_DATA_ENCRYPTED)
+        {
+            if (!firmware_decryption_update(&decrypt_context, install_buffer,
+                                            chunk, sizeof(install_buffer),
+                                            &output_length))
+                goto out;
+        }
+        else
+        {
+            output_length = chunk;
+        }
+        if (output_length != 0u &&
+            !stm32_flash_program(destination, install_buffer,
+                                 (uint32_t)output_length))
             goto out;
         watchdog_refresh();
         source += chunk;
-        destination += chunk;
+        destination += (uint32_t)output_length;
+        written += (uint32_t)output_length;
         remaining -= chunk;
     }
 
-    if (!internal_data_valid(&header))
+    if (encoding == SLOT_DATA_ENCRYPTED)
+    {
+        size_t output_length;
+
+        if (!firmware_decryption_finish(&decrypt_context, &encryption,
+                                        install_buffer, sizeof(install_buffer),
+                                        &output_length))
+        {
+            decrypt_active = false;
+            goto out;
+        }
+        decrypt_active = false;
+        if (output_length != 0u &&
+            !stm32_flash_program(destination, install_buffer,
+                                 (uint32_t)output_length))
+            goto out;
+        written += (uint32_t)output_length;
+    }
+
+    if (written != header.data_length || !internal_data_valid(&header))
         goto out;
 
     /* 数据确认无误后，最后写入256字节有效头，完成一次原子式提交。 */
@@ -265,6 +398,8 @@ bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
          firmware_authenticate_header(&header);
 
 out:
+    if (decrypt_active)
+        firmware_decryption_abort(&decrypt_context);
     stm32_flash_lock();
     return ok;
 }
@@ -296,7 +431,7 @@ bool firmware_slot_snapshot_internal(uint8_t slot)
     remaining = header.data_length;
     while (remaining)
     {
-        chunk = remaining > sizeof(install_buffer) ? sizeof(install_buffer) : remaining;
+        chunk = remaining > INSTALL_CHUNK_SIZE ? INSTALL_CHUNK_SIZE : remaining;
         if (!w25q_program((w25q_chip_t)slot, destination,
                           (const uint8_t *)source, chunk))
             return false;

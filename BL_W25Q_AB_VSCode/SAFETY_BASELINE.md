@@ -260,3 +260,27 @@ SHA-256为`8A6679889FF2510150CC3562B1BE8048F4B780488AA39122E72F8A9AABCF986C`。
 - `tools/jlink/backup_ota_ordering_v1_7_final.jlink`；
 - `tools/jlink/restore_ota_ordering_v1_7_final.jlink`；
 - `tools/jlink/verify_ota_ordering_v1_7_final.jlink`。
+
+## v3.5 加密固件救援基线
+
+- Bootloader：`v3.5.0-encrypted-dev`，Release Flash 35,036字节/48 KiB；
+- 最终BCR：`Normal / active=A / pending=none / attempts=0 / sequence=311`；
+- Slot A：`v1.8.1-encrypted-ota-test / release 3`，payload 158,460字节，
+  CRC32 `0x0ABA14CD`；
+- Slot B：`v1.8.0-encrypted / release 2`，payload 158,452字节，
+  CRC32 `0x21897F46`；
+- 两槽Header、ECDSA签名、AES-GCM认证、明文摘要和向量表均通过实板全量检查；
+- AES开发密钥ID：`0x10DE0ABA`，密钥本体只在Git忽略的`.keys/`和Bootloader中。
+
+升级前先用J-Link把板上512 KiB与v3.4已知良好镜像逐字节验证一致，再只更新
+Bootloader前48 KiB。新Bootloader成功启动原v1.7明文签名应用，随后分别完成
+USART3加密升级和COS加密OTA，没有修改RDP、WRP或其他Option Bytes。
+
+最终512 KiB救援镜像为
+`../.device-backups/stm32f407_encrypted_v3_5_final_20260820.bin`，长度524,288字节，
+SHA-256为`D19567D780278413A892664B26EE962962D8F4337CD97BF82C76D35F473726F8`。
+保存后已立即执行整片`verifybin`并恢复应用运行。对应脚本为：
+
+- `tools/jlink/backup_encrypted_v3_5_final.jlink`；
+- `tools/jlink/restore_encrypted_v3_5_final.jlink`；
+- `tools/jlink/verify_encrypted_v3_5_final.jlink`。

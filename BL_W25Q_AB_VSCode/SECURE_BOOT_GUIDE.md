@@ -1,7 +1,8 @@
 # 固件签名、IWDG 与维护权限说明
 
-本文记录 `v3.3.0-resume-dev/prod` 的签名、防降级、IWDG和维护权限、代码边界、构建方式和部署
-注意事项。原有外部 A/B 状态机、掉电提交顺序和高速串口协议没有被替换。
+本文记录固件签名、防降级、IWDG和维护权限。`v3.5.0-encrypted`新增的保密层见
+[`ENCRYPTED_FIRMWARE_GUIDE.md`](ENCRYPTED_FIRMWARE_GUIDE.md)；原有外部A/B
+状态机、掉电提交顺序和高速串口协议没有被替换。
 
 ## 1. 这次解决了什么
 
@@ -13,6 +14,7 @@ CRC32。新方案把职责分成三层：
 | CRC32 | 数据在传输/存储时是否意外损坏 | 不能证明固件是谁生成的 |
 | SHA-256 | 当前数据是否与Header记录的摘要一致 | 摘要本身可被攻击者一起替换 |
 | ECDSA-P256 | Header和其中的SHA-256是否由持有私钥的人签发 | 不加密固件；旧签名包由安全版本策略处理 |
+| AES-256-GCM | 公开升级包是否泄露正文、密文是否被改动 | 不代替ECDSA授权；RDP0下不能抵抗SWD物理提取 |
 
 Bootloader只保存公钥。生成固件的一端保存私钥并对XBIN Header签名，设备端无法
 从公钥反推出私钥。攻击者即使同时修改应用、CRC32、SHA-256和Header CRC32，
@@ -27,11 +29,14 @@ Bootloader只保存公钥。生成固件的一端保存私钥并对XBIN Header�
 - 独立的安全版本下限阻止普通链路重新安装已淘汰的签名包；KEY2仍可明确授权
   用户回退，而Trial失败自动恢复旧活动槽不受限制。
 
-## 2. XBIN v2 格式
+## 2. XBIN签名Header v2
 
-XBIN仍由4096字节Header区和应用BIN组成，应用数据仍从偏移`0x1000`开始。
+XBIN仍由4096字节Header区和应用数据组成，数据仍从偏移`0x1000`开始。
 `magic_header_t`保持256字节，并保留旧版中数据描述字段的偏移，便于先用旧
 Bootloader安装一次新签名应用，再迁移Bootloader本身。
+
+加密XBIN v3在偏移256处增加64字节ENC3描述，并把偏移`0x1000`后的应用数据
+替换为等长密文；下面这份签名Header本身仍保持v2格式。
 
 | 偏移 | 长度 | 字段 |
 | ---: | ---: | --- |
@@ -74,11 +79,12 @@ Bootloader安装一次新签名应用，再迁移Bootloader本身。
 ```text
 .keys/dev_firmware_private.pem
 .keys/dev_firmware_public.pem
+.keys/dev_firmware_aes256.key
 ```
 
 整个`.keys/`目录被Git忽略。私钥丢失后，已经烧入对应公钥的Bootloader不会
 接受另一把密钥签发的新固件；开发板仍可通过J-Link重写Bootloader恢复。若要
-长期使用同一开发固件链，应单独备份这两个文件。
+长期使用同一开发固件链，应单独备份这三个文件。
 
 ```powershell
 cmake --preset release
@@ -94,13 +100,14 @@ PROD不会自动生成密钥，必须显式提供一对匹配的PEM文件。建�
 ```powershell
 $env:CLOCK_FW_SIGNING_KEY='D:\secure\clock_prod_private.pem'
 $env:CLOCK_FW_VERIFY_KEY='D:\secure\clock_prod_public.pem'
+$env:CLOCK_FW_ENCRYPTION_KEY='D:\secure\clock_prod_aes256.key'
 
 cmake --preset release-prod
 cmake --build --preset validate-release-prod --parallel
 ```
 
-同一套构建会完成两件事：把公钥坐标和`key_id`生成到构建目录并编入
-Bootloader；再用对应私钥对WeatherClock XBIN签名。CMake会拒绝缺少文件、
+同一套构建会把公钥和AES密钥生成到构建目录并编入Bootloader，再用私钥签名
+Header、用AES-256-GCM加密WeatherClock正文。CMake会拒绝缺少文件、错误长度、
 公私钥不匹配或不是P-256的配置。
 
 ## 4. IWDG 与 Trial 健康确认
@@ -182,12 +189,15 @@ XBIN中的`security_version`与`v1.4.0`等显示版本完全独立。BCR保存�
 
 ## 7. 自动化验证
 
-`security-test-release`包含两类互补测试：
+`security-test-release`包含多类互补测试：
 
 - Python/OpenSSL测试分别篡改Payload、重算CRC32和SHA-256、修改元数据、修改
   安全版本和签名，确认所有伪造镜像都被拒绝，并锁定v2.1迁移字段偏移；
 - 宿主机GCC直接编译Bootloader使用的`sha256.c`、`uECC.c`和
   `firmware_auth.c`，确认同一份C代码接受真实XBIN并拒绝修改后的签名/摘要。
+- 宿主机GCC直接编译Bootloader使用的Mbed TLS AES/GCM源码和
+  `firmware_decryption.c`，验证流式解密、Tag认证与错误Tag拒绝。
+- Python测试继续篡改密文、Nonce、AES密钥ID和Tag，确认ENC3描述与密文受认证。
 - 另一份宿主机C测试覆盖正常升级、降级拒绝、KEY2授权和下限只增不减规则。
 
 Debug、Release、PROD Release仍分别执行链接区、MSP、Reset_Handler、Payload
@@ -223,8 +233,9 @@ dotnet .\SerialUpgrader\bin\Release\net8.0-windows\SerialUpgrader.dll `
 ## 8. 当前尚未覆盖的工业化能力
 
 安全版本下限保存在EEPROM双副本BCR中，没有使用不可逆硬件计数器；拥有J-Link的
-设备所有者仍能恢复或重置开发板。XBIN内容没有加密，Bootloader本身也仍只通过
-SWD更新，这些是后续可以独立讨论的保密和Bootloader自身保护主题。
+设备所有者仍能恢复或重置开发板。XBIN v3正文已经加密，但为了保留J-Link救援，
+设备仍处于RDP Level 0，内部Flash保存明文应用且Bootloader中包含AES密钥。因此
+它能防止公开升级包和外部Flash直接泄露固件，不能抵抗可接触SWD的物理攻击者。
 
 外部槽断点续传只用分块CRC定位已经存在的数据，最终信任边界没有改变；完整流程
 和中断测试见`RESUMABLE_UPGRADE_GUIDE.md`。

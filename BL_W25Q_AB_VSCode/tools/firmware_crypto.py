@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import secrets
 import subprocess
 import tempfile
 from pathlib import Path
@@ -21,6 +22,7 @@ SIGNATURE_SIZE = 64
 HEADER_CRC_OFFSET = 252
 SIGNATURE_DOMAIN = b"ClockFW-XBIN-v2"
 P256_OID_DER = bytes.fromhex("06082A8648CE3D030107")
+ENCRYPTION_KEY_SIZE = 32
 
 
 def run_openssl(openssl: Path, *arguments: str, capture: bool = False) -> bytes:
@@ -126,6 +128,56 @@ static const uint8_t firmware_public_key[64] =
     output.write_text(text, encoding="utf-8", newline="\n")
 
 
+def encryption_key_id(key: bytes) -> int:
+    """Return the compact identifier for one AES-256 firmware key."""
+    if len(key) != ENCRYPTION_KEY_SIZE:
+        raise ValueError("firmware encryption key must contain exactly 32 bytes")
+    return int.from_bytes(hashlib.sha256(key).digest()[:4], "little")
+
+
+def ensure_encryption_key(path: Path, create: bool) -> bytes:
+    """Create a random local DEV key when requested, then validate its size."""
+    if create and not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(secrets.token_bytes(ENCRYPTION_KEY_SIZE))
+    if not path.is_file():
+        raise FileNotFoundError("firmware encryption key file does not exist")
+    key = path.read_bytes()
+    if len(key) != ENCRYPTION_KEY_SIZE:
+        raise ValueError("firmware encryption key must contain exactly 32 raw bytes")
+    return key
+
+
+def write_encryption_key_header(output: Path, key: bytes) -> None:
+    """Generate the private AES key header compiled only into the Bootloader."""
+    rows = []
+    for offset in range(0, len(key), 8):
+        values = ", ".join(f"0x{value:02X}u" for value in key[offset:offset + 8])
+        rows.append(f"    {values},")
+
+    text = f"""/**
+ * @file firmware_encryption_key.h
+ * @brief Generated AES-256 firmware decryption key; do not edit or commit.
+ */
+
+#ifndef __FIRMWARE_ENCRYPTION_KEY_H__
+#define __FIRMWARE_ENCRYPTION_KEY_H__
+
+#include <stdint.h>
+
+#define FIRMWARE_ENCRYPTION_KEY_ID 0x{encryption_key_id(key):08X}u
+
+static const uint8_t firmware_encryption_key[32] =
+{{
+{chr(10).join(rows)}
+}};
+
+#endif /* __FIRMWARE_ENCRYPTION_KEY_H__ */
+"""
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(text, encoding="utf-8", newline="\n")
+
+
 def canonical_header(header: bytes) -> bytes:
     """Build the byte string hashed and signed for an XBIN v2 header."""
     if len(header) != HEADER_SIZE:
@@ -227,8 +279,12 @@ def main() -> int:
     parser.add_argument("--private-key", required=True, type=Path)
     parser.add_argument("--public-key", required=True, type=Path)
     parser.add_argument("--output-header", required=True, type=Path)
+    parser.add_argument("--encryption-key", required=True, type=Path)
+    parser.add_argument("--output-encryption-header", required=True, type=Path)
     parser.add_argument("--create", action="store_true",
                         help="create a local DEV key pair when both files are absent")
+    parser.add_argument("--create-encryption-key", action="store_true",
+                        help="create a random local 32-byte DEV encryption key")
     args = parser.parse_args()
 
     try:
@@ -236,7 +292,17 @@ def main() -> int:
             args.openssl, args.private_key, args.public_key, args.create
         )
         write_public_header(args.output_header, point)
+        encryption_key = ensure_encryption_key(
+            args.encryption_key, args.create_encryption_key
+        )
+        write_encryption_key_header(
+            args.output_encryption_header, encryption_key
+        )
         print(f"Firmware verification key ID: 0x{public_key_id(point):08X}")
+        print(
+            "Firmware encryption key ID: "
+            f"0x{encryption_key_id(encryption_key):08X}"
+        )
     except (OSError, RuntimeError, ValueError) as error:
         parser.error(str(error))
     return 0

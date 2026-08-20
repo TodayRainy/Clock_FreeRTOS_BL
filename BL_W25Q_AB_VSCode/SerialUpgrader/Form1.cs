@@ -84,6 +84,9 @@ namespace SerialUpgrader
             textBoxLog.AppendText($"固件校验: 0x{header.DataCrc32:X8}\r\n");
             textBoxLog.AppendText($"签名格式: XBIN v{header.FormatVersion}, Key ID 0x{header.KeyId:X8}\r\n");
             textBoxLog.AppendText($"SHA-256: {Convert.ToHexString(header.ImageSha256)}\r\n");
+            textBoxLog.AppendText(header.IsEncrypted
+                ? $"加密: AES-256-GCM (key 0x{header.EncryptionKeyId:X8})\r\n"
+                : "加密: 未启用\r\n");
             textBoxLog.AppendText($"固件大小: {header.DataLength} ({header.DataLength / 1024.0:F2} KB)\r\n");
 
             using Transfer transfer = new(port);

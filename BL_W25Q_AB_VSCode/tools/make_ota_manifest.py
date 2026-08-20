@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Create the small COS manifest consumed by WeatherClock OTA."""
+"""Create the COS manifest for a plaintext v2 or encrypted v3 XBIN."""
 
 import argparse
 import hashlib
@@ -7,6 +7,8 @@ import json
 import struct
 import zlib
 from pathlib import Path
+
+from validate_images import decrypt_xbin_payload, encryption_header
 
 MAGIC = 0x4D414749
 FORMAT_V2 = 2
@@ -20,13 +22,15 @@ def read_c_string(data: bytes) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Generate an OTA manifest from a signed XBIN v2 image"
+        description="Generate an OTA manifest from a signed/encrypted XBIN"
     )
     parser.add_argument("xbin", type=Path)
     parser.add_argument("output", type=Path)
     parser.add_argument("--url", required=True)
     parser.add_argument("--product", default="clock-f407")
     parser.add_argument("--channel", default="stable")
+    parser.add_argument("--aes-tool", type=Path)
+    parser.add_argument("--encryption-key", type=Path)
     args = parser.parse_args()
 
     package = args.xbin.read_bytes()
@@ -42,10 +46,16 @@ def main() -> None:
     image_sha256 = header[52:84]
     version = read_c_string(header[96:160])
     header_crc32 = struct.unpack_from("<I", header, 252)[0]
-    payload = package[data_offset:]
+    descriptor = encryption_header(package)
+    try:
+        payload = decrypt_xbin_payload(
+            package, args.aes_tool, args.encryption_key
+        )
+    except ValueError as error:
+        parser.error(str(error))
 
     if magic != MAGIC or image_format != FORMAT_V2:
-        parser.error("not a signed XBIN v2 image")
+        parser.error("not a signed XBIN image")
     if (
         data_offset != HEADER_AREA_SIZE
         or data_address != 0x08010000
@@ -68,7 +78,7 @@ def main() -> None:
         "firmware_version": version,
         "release_sequence": release_sequence,
         "security_version": security_version,
-        "xbin_format_version": image_format,
+        "xbin_format_version": 3 if descriptor else image_format,
         "xbin_size": len(package),
         "xbin_sha256": hashlib.sha256(package).hexdigest().upper(),
         "payload_size": data_length,
@@ -76,6 +86,9 @@ def main() -> None:
         "payload_sha256": image_sha256.hex().upper(),
         "download_url": args.url,
     }
+    if descriptor:
+        manifest["encryption"] = "AES-256-GCM"
+        manifest["encryption_key_id"] = f"{struct.unpack_from('<I', descriptor, 16)[0]:08X}"
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(
         json.dumps(manifest, indent=2, ensure_ascii=True) + "\n",

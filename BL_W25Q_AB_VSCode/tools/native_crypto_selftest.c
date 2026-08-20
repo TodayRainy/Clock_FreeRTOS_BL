@@ -49,12 +49,16 @@ int main(int argc, char **argv)
     };
     uint8_t digest[SHA256_DIGEST_SIZE];
     uint8_t *xbin;
+    uint8_t *application;
     size_t xbin_size;
+    size_t application_size;
     magic_header_t header;
 
-    if (argc != 2 || !load_file(argv[1], &xbin, &xbin_size))
+    if (argc != 3 || !load_file(argv[1], &xbin, &xbin_size) ||
+        !load_file(argv[2], &application, &application_size))
     {
-        fprintf(stderr, "usage: native_crypto_selftest <firmware.xbin>\n");
+        fprintf(stderr,
+                "usage: native_crypto_selftest <firmware.xbin> <application.bin>\n");
         return 2;
     }
     if (xbin_size < MAGIC_HEADER_AREA_SIZE + 1u)
@@ -74,28 +78,31 @@ int main(int argc, char **argv)
         return 5;
     }
 
-    sha256(xbin + header.data_offset, header.data_length, digest);
+    if (application_size != header.data_length)
+        return 6;
+    sha256(application, (uint32_t)application_size, digest);
     if (!firmware_hash_matches(&header, digest))
     {
         fprintf(stderr, "C SHA-256 rejected the valid XBIN payload\n");
-        return 6;
+        return 7;
     }
 
     header.signature[0] ^= 1u;
     if (firmware_authenticate_header(&header))
     {
         fprintf(stderr, "C ECDSA verifier accepted a modified signature\n");
-        return 7;
+        return 8;
     }
 
     digest[0] ^= 1u;
     if (firmware_hash_matches((const magic_header_t *)xbin, digest))
     {
         fprintf(stderr, "C SHA-256 comparison accepted a modified digest\n");
-        return 8;
+        return 9;
     }
 
     free(xbin);
+    free(application);
     puts("Native C SHA-256 and ECDSA-P256 self-test passed.");
     return 0;
 }

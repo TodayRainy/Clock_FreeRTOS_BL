@@ -3,7 +3,7 @@
 ## 1. 目标与边界
 
 这套 OTA 给现有 USART3 升级增加了一条联网下载路径，但不替代串口升级、
-KEY2 维护入口或 J-Link 救援。天气时钟负责把签名 XBIN 下载到非活动 W25Q128；
+KEY2 维护入口或 J-Link 救援。天气时钟负责把签名加密 XBIN 下载到非活动 W25Q128；
 Bootloader 仍是唯一有权擦写内部应用区、切换 A/B 状态和执行回退的组件。
 
 当前实现刻意保持简单：腾讯云 COS 托管一个扁平 JSON 清单和一个完整 XBIN；
@@ -14,7 +14,7 @@ ECDSA 验签代码。
 
 ```text
 腾讯云 COS
-  manifest.json + signed.xbin
+  manifest.json + signed-encrypted.xbin
             |
             | HTTPS / HTTP Range
             v
@@ -44,8 +44,9 @@ USART1 调试口保留一个学习和联调用命令：
 ## 3. 下载与掉电恢复
 
 OTA 固件永远写入当前 `active_slot` 的另一槽，已确认回退槽不会被覆盖。新下载
-开始时先擦除目标槽，Header 的前 256 字节保持擦除态；只有正文全部下载并通过
-CRC32、payload SHA-256 和整包 SHA-256 后，才最后写入有效 Header。
+开始时先擦除目标槽，Header的前256字节保持擦除态；只有密文全部下载并通过
+整包SHA-256后，才先写入ENC3描述与填充，最后写入有效签名Header。加密包的
+明文CRC32、SHA-256和GCM Tag由复位后的Bootloader验证。
 
 下载每完成 32 KiB，在 BL24C512 的 `0xFC00` 保存一个 128 字节进度记录。掉电
 后下一次自动检查或输入 `u`，程序匹配固件 SHA-256、目标槽和安全版本，然后
@@ -69,7 +70,7 @@ Bootloader 会重新读取整颗目标槽，并检查：
 
 1. 请求记录 CRC 和目标必须有效，且只能指向非活动槽；
 2. XBIN Header 格式、Header CRC 和 ECDSA-P256 签名；
-3. 完整 payload 的 CRC32、SHA-256 和向量表；
+3. 若是v3则完成AES-GCM认证和流式解密，再检查明文CRC32、SHA-256和向量表；
 4. 请求字段必须与已验签 Header 一致；
 5. 安全版本不得低于设备已经确认的防降级下限。
 6. 候选普通发布序号必须高于当前固件，旧包和同序号异内容包均拒绝自动安装。
@@ -102,7 +103,9 @@ XBIN 大小和整包 SHA-256；版本、发布序号、安全版本、CRC 和 pa
 python tools/make_ota_manifest.py `
   build/release-candidate/WeatherClock/stm32f407_upgrade.xbin `
   ota/manifest.json `
-  --url https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/releases/weatherclock-v1.7.0-ota-ordering-r1.xbin
+  --url https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/releases/weatherclock-v1.8.0-encrypted-r2.xbin `
+  --aes-tool "$env:LOCALAPPDATA\ClockF407Tools\firmware_aes_gcm_tool.exe" `
+  --encryption-key .keys/dev_firmware_aes256.key
 ```
 
 发布时必须先上传带唯一版本名的 XBIN，确认公网可读及 Range 正常，最后再覆盖
@@ -110,7 +113,7 @@ python tools/make_ota_manifest.py `
 
 ```powershell
 coscli cp build/release-candidate/WeatherClock/stm32f407_upgrade.xbin `
-  cos://codex_ota/clock-f407/releases/weatherclock-v1.5.1-ota-test.xbin
+  cos://codex_ota/clock-f407/releases/weatherclock-v1.8.0-encrypted-r2.xbin
 coscli cp ota/manifest.json `
   cos://codex_ota/clock-f407/manifest.json
 ```
@@ -176,9 +179,9 @@ cmake --build --preset release --target test_firmware_security
 
 ## 8. 当前资源与限制
 
-- Bootloader：约 29 KiB / 48 KiB Flash。
-- WeatherClock：约 320 KiB / 448 KiB Flash。
-- WeatherClock 静态 RAM：约 122 KiB / 128 KiB，其中包含 92 KiB FreeRTOS heap。
+- Bootloader：约35 KiB / 48 KiB Flash。
+- WeatherClock：约159 KiB / 448 KiB Flash。
+- WeatherClock静态RAM：约71 KiB / 128 KiB。
 - OTA 只支持 HTTPS GET、`Content-Length` 和 HTTP Range，不处理重定向或
   chunked response；腾讯云 COS 当前响应满足这些条件。
 - ESP-AT 与天气/SNTP 请求共用互斥锁。升级期间网络业务会等待，但 UI 和高
@@ -274,3 +277,16 @@ OTA 失败并保留检查点，没有写有效 Header、没有提交安装请求
 本轮 XBIN 为162,132字节，payload为158,036字节。主机侧还验证了相同发布序号、
 不同 SHA 会得到`FIRMWARE_RELEASE_CONFLICT`，以及直接篡改 Header 发布序号无法
 通过 ECDSA-P256 验签。详细记录见`RELEASE_NOTES_v1.7.0.md`。
+
+### 9.4 加密XBIN OTA回归
+
+2026-08-20在`v3.5.0-encrypted-dev`上完成XBIN v3实板OTA。release 3候选总长
+162,556字节，公网Range请求能精确返回新增的320字节Header/ENC3区域。应用从
+偏移4096下载密文到非活动A槽，约19秒后完整XBIN SHA-256通过；应用不持有AES
+密钥，因此把GCM Tag和明文CRC/SHA验证明确延后给Bootloader。
+
+用户RESET后，Bootloader接受OTA请求、两次流式认证解密并完成内部Flash安装，
+Trial约5秒后确认。最终为`Normal / active=A / sequence=311`，Slot A是
+`v1.8.1-encrypted-ota-test / release 3`，Slot B保留USART3安装的
+`v1.8.0-encrypted / release 2`，两槽均通过全量校验。当前公网Manifest和本地
+`ota/manifest.json`均指向release 3，详细数据见`RELEASE_NOTES_v1.8.0.md`。

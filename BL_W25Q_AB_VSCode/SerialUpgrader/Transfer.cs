@@ -865,7 +865,8 @@ public sealed class Transfer : IDisposable
         else
         {
             uint dataEnd = header.DataOffset + header.DataLength;
-            int progressTotal = checked((int)header.DataLength + 256);
+            int headerCommitSize = header.HeaderCommitSize;
+            int progressTotal = checked((int)header.DataLength + headerCommitSize);
             bool headerSectorErased = false;
 
             if (resumeOffset < dataEnd)
@@ -900,7 +901,7 @@ public sealed class Transfer : IDisposable
             if (!headerSectorErased &&
                 !await W25Erase(target, 0, RESUME_BLOCK_SIZE))
                 return false;
-            if (!await W25Program(target, 0, xbin[..256], mtu,
+            if (!await W25Program(target, 0, xbin[..headerCommitSize], mtu,
                                   checked((int)header.DataLength), progressTotal))
                 return false;
         }

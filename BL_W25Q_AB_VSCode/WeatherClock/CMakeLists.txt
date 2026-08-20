@@ -112,6 +112,7 @@ set_target_properties(weatherclock PROPERTIES
     OUTPUT_NAME stm32f407
     SUFFIX .elf
 )
+add_dependencies(weatherclock firmware_aes_gcm_tool)
 
 target_compile_definitions(weatherclock PRIVATE
     STM32F40_41xxx
@@ -171,9 +172,11 @@ add_custom_command(TARGET weatherclock POST_BUILD
             --private-key ${FIRMWARE_SIGNING_KEY}
             --public-key ${FIRMWARE_VERIFY_KEY}
             --openssl ${FIRMWARE_OPENSSL_EXECUTABLE}
+            --encryption-key ${FIRMWARE_ENCRYPTION_KEY}
+            --aes-tool ${FIRMWARE_AES_TOOL}
             --security-version ${FIRMWARE_SECURITY_VERSION}
             --release-sequence ${FIRMWARE_RELEASE_SEQUENCE}
             --version ${WEATHERCLOCK_VERSION}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
-    COMMENT "Generating WeatherClock HEX/BIN/XBIN"
+    COMMENT "Generating WeatherClock HEX/BIN/encrypted XBIN"
 )

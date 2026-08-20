@@ -32,3 +32,26 @@ bool magic_header_validate_data(const magic_header_t *header)
 
     return true;
 }
+
+bool magic_encryption_header_validate(const xbin_encryption_header_t *header)
+{
+    uint32_t index;
+
+    if (header->magic != XBIN_ENCRYPTION_MAGIC ||
+        header->format_version != XBIN_ENCRYPTION_FORMAT_V1 ||
+        header->header_size != XBIN_ENCRYPTION_HEADER_SIZE ||
+        header->algorithm != XBIN_ENCRYPTION_ALGORITHM_AES_256_GCM ||
+        header->key_id == 0u ||
+        crc32((const uint8_t *)header,
+              offsetof(xbin_encryption_header_t, this_crc32)) !=
+            header->this_crc32)
+        return false;
+
+    for (index = 0; index < sizeof(header->reserved) / sizeof(header->reserved[0]);
+         ++index)
+    {
+        if (header->reserved[index] != 0u)
+            return false;
+    }
+    return true;
+}

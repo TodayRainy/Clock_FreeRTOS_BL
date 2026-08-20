@@ -24,6 +24,7 @@
 #include "crc32.h"
 #include "esp_at.h"
 #include "firmware_release_policy.h"
+#include "firmware_encryption_format.h"
 #include "firmware_security_policy.h"
 #include "magic_header.h"
 #include "ota.h"
@@ -54,6 +55,7 @@ typedef struct
     uint32_t xbin_size;
     uint8_t xbin_sha256[SHA256_DIGEST_SIZE];
     magic_header_t header;
+    xbin_encryption_header_t encryption;
 } ota_candidate_t;
 
 static TaskHandle_t ota_task_handle;
@@ -258,24 +260,34 @@ static bool download_manifest(void)
     return ok;
 }
 
-/** @brief 用 Range 请求读取候选 XBIN 的 256 字节 Header。 */
+/** @brief 用 Range 请求读取签名 Header 和紧随其后的可选加密描述。 */
 static bool download_candidate_header(ota_candidate_t *candidate)
 {
+    uint8_t header_area[MAGIC_HEADER_SIZE + XBIN_ENCRYPTION_HEADER_SIZE];
     esp_http_info_t info;
     bool ok = false;
 
     if (!esp_at_http_open(candidate->download_url, 0u,
-                          MAGIC_HEADER_SIZE - 1u, &info))
+                          sizeof(header_area) - 1u, &info))
         return false;
-    if (info.status_code == 206u && info.content_length == MAGIC_HEADER_SIZE &&
+    if (info.status_code == 206u && info.content_length == sizeof(header_area) &&
         info.total_length == candidate->xbin_size &&
-        http_read_exact((uint8_t *)&candidate->header,
-                        sizeof(candidate->header)))
+        http_read_exact(header_area, sizeof(header_area)))
         ok = true;
     esp_at_http_close();
 
-    if (!ok || !magic_header_validate_data(&candidate->header) ||
+    if (!ok)
+        return false;
+
+    memcpy(&candidate->header, header_area, sizeof(candidate->header));
+    memcpy(&candidate->encryption, header_area + MAGIC_HEADER_SIZE,
+           sizeof(candidate->encryption));
+
+    if (!magic_header_validate_data(&candidate->header) ||
         memchr(candidate->header.version, '\0', MAGIC_VERSION_SIZE) == NULL)
+        return false;
+    if (candidate->encryption.magic == XBIN_ENCRYPTION_MAGIC &&
+        !magic_encryption_header_validate(&candidate->encryption))
         return false;
     return candidate->header.data_offset + candidate->header.data_length ==
            candidate->xbin_size;
@@ -492,28 +504,46 @@ out:
     return ok && baud_restored;
 }
 
-/** @brief 重新扫描外部槽数据，验证 payload 和完整 XBIN 的 CRC/SHA。 */
+/**
+ * @brief 重新扫描外部槽并验证完整 XBIN。
+ *
+ * 明文 v2 继续在应用侧核对 payload CRC/SHA。加密 v3 的应用侧没有密钥，只核对
+ * COS 清单记录的整包 SHA-256；明文摘要和 GCM Tag 由 Bootloader 独立验证。
+ */
 static bool verify_download(const ota_candidate_t *candidate,
-                            uint8_t target_slot)
+                             uint8_t target_slot)
 {
     static const uint8_t zeros[256] = {0};
     sha256_context_t payload_sha;
     sha256_context_t xbin_sha;
     uint8_t payload_digest[SHA256_DIGEST_SIZE];
     uint8_t xbin_digest[SHA256_DIGEST_SIZE];
-    uint32_t crc = crc32_begin();
+    uint32_t crc = 0;
     uint32_t offset = MAGIC_HEADER_AREA_SIZE;
     uint32_t i;
     bool crc_ok;
     bool payload_header_ok;
     bool xbin_ok;
+    bool encrypted = candidate->encryption.magic == XBIN_ENCRYPTION_MAGIC;
 
-    sha256_init(&payload_sha);
+    if (!encrypted)
+    {
+        crc = crc32_begin();
+        sha256_init(&payload_sha);
+    }
     sha256_init(&xbin_sha);
     sha256_update(&xbin_sha, (const uint8_t *)&candidate->header,
                   sizeof(candidate->header));
-    for (i = MAGIC_HEADER_SIZE; i < MAGIC_HEADER_AREA_SIZE; i += sizeof(zeros))
-        sha256_update(&xbin_sha, zeros, sizeof(zeros));
+    sha256_update(&xbin_sha, (const uint8_t *)&candidate->encryption,
+                  sizeof(candidate->encryption));
+    for (i = MAGIC_HEADER_SIZE + XBIN_ENCRYPTION_HEADER_SIZE;
+         i < MAGIC_HEADER_AREA_SIZE; i += sizeof(zeros))
+    {
+        uint32_t chunk = MAGIC_HEADER_AREA_SIZE - i;
+        if (chunk > sizeof(zeros))
+            chunk = sizeof(zeros);
+        sha256_update(&xbin_sha, zeros, chunk);
+    }
 
     while (offset < candidate->xbin_size)
     {
@@ -522,50 +552,76 @@ static bool verify_download(const ota_candidate_t *candidate,
         if (chunk > sizeof(stream_buffer))
             chunk = sizeof(stream_buffer);
         w25q_read((w25q_chip_t)target_slot, offset, stream_buffer, chunk);
-        crc = crc32_update(crc, stream_buffer, chunk);
-        sha256_update(&payload_sha, stream_buffer, chunk);
+        if (!encrypted)
+        {
+            crc = crc32_update(crc, stream_buffer, chunk);
+            sha256_update(&payload_sha, stream_buffer, chunk);
+        }
         sha256_update(&xbin_sha, stream_buffer, chunk);
         offset += chunk;
     }
-    crc = crc32_end(crc);
-    sha256_final(&payload_sha, payload_digest);
+    if (!encrypted)
+    {
+        crc = crc32_end(crc);
+        sha256_final(&payload_sha, payload_digest);
+    }
     sha256_final(&xbin_sha, xbin_digest);
 
-    crc_ok = crc == candidate->header.data_crc32;
-    payload_header_ok =
+    crc_ok = encrypted || crc == candidate->header.data_crc32;
+    payload_header_ok = encrypted ||
         memcmp(payload_digest, candidate->header.image_sha256,
                sizeof(payload_digest)) == 0;
     xbin_ok = memcmp(xbin_digest, candidate->xbin_sha256,
                      sizeof(xbin_digest)) == 0;
-    printf("[OTA] verify CRC=%s (got %08lX), payload=%s, xbin=%s\n",
-           crc_ok ? "ok" : "bad", (unsigned long)crc,
-           payload_header_ok ? "ok" : "bad",
-           xbin_ok ? "ok" : "bad");
+    if (encrypted)
+        printf("[OTA] verify encrypted payload=deferred, xbin=%s\n",
+               xbin_ok ? "ok" : "bad");
+    else
+        printf("[OTA] verify CRC=%s (got %08lX), payload=%s, xbin=%s\n",
+               crc_ok ? "ok" : "bad", (unsigned long)crc,
+               payload_header_ok ? "ok" : "bad",
+               xbin_ok ? "ok" : "bad");
     return crc_ok && payload_header_ok && xbin_ok;
 }
 
 /** @brief 最后写 Header，使外部槽从“半成品”一次变为有效候选。 */
 static bool commit_header(const ota_candidate_t *candidate,
-                          uint8_t target_slot)
+                           uint8_t target_slot)
 {
     static const uint8_t zeros[256] = {0};
-    magic_header_t verify;
+    magic_header_t verify_header;
+    xbin_encryption_header_t verify_encryption;
     uint32_t offset;
 
     /* XBIN Header区的填充先写，真正有效的前256字节始终最后提交。 */
-    for (offset = MAGIC_HEADER_SIZE; offset < MAGIC_HEADER_AREA_SIZE;
+    for (offset = MAGIC_HEADER_SIZE + XBIN_ENCRYPTION_HEADER_SIZE;
+         offset < MAGIC_HEADER_AREA_SIZE;
          offset += sizeof(zeros))
     {
+        uint32_t chunk = MAGIC_HEADER_AREA_SIZE - offset;
+        if (chunk > sizeof(zeros))
+            chunk = sizeof(zeros);
         if (!w25q_program((w25q_chip_t)target_slot, offset, zeros,
-                          sizeof(zeros)))
+                          chunk))
             return false;
     }
+    if (!w25q_program((w25q_chip_t)target_slot,
+                       XBIN_ENCRYPTION_HEADER_OFFSET,
+                       (const uint8_t *)&candidate->encryption,
+                       sizeof(candidate->encryption)))
+        return false;
     if (!w25q_program((w25q_chip_t)target_slot, 0u,
                       (const uint8_t *)&candidate->header,
                       sizeof(candidate->header)))
         return false;
-    w25q_read((w25q_chip_t)target_slot, 0u, (uint8_t *)&verify, sizeof(verify));
-    return memcmp(&verify, &candidate->header, sizeof(verify)) == 0;
+    w25q_read((w25q_chip_t)target_slot, 0u,
+              (uint8_t *)&verify_header, sizeof(verify_header));
+    w25q_read((w25q_chip_t)target_slot, XBIN_ENCRYPTION_HEADER_OFFSET,
+              (uint8_t *)&verify_encryption, sizeof(verify_encryption));
+    return memcmp(&verify_header, &candidate->header,
+                  sizeof(verify_header)) == 0 &&
+           memcmp(&verify_encryption, &candidate->encryption,
+                  sizeof(verify_encryption)) == 0;
 }
 
 /** @brief 写入一次性请求；此后只有 Bootloader 能决定是否安装。 */

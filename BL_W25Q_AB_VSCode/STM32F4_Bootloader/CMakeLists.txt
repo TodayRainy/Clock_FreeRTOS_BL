@@ -16,6 +16,7 @@ set(BOOTLOADER_SOURCES
     app/bootloader.c
     app/boot_protocol.c
     app/firmware_auth.c
+    app/firmware_decryption.c
     app/firmware_slot.c
     app/magic_header.c
     app/ota_request.c
@@ -34,6 +35,11 @@ set(BOOTLOADER_SOURCES
     third_lib/crc/crc32.c
     third_lib/sha256/sha256.c
     third_lib/micro-ecc/uECC.c
+    third_lib/mbedtls/library/aes.c
+    third_lib/mbedtls/library/gcm.c
+    third_lib/mbedtls/library/block_cipher.c
+    third_lib/mbedtls/library/constant_time.c
+    third_lib/mbedtls/library/platform_util.c
     ${CMAKE_SOURCE_DIR}/shared/watchdog.c
     third_lib/easylogger/elog.c
     third_lib/easylogger/elog_port.c
@@ -74,6 +80,8 @@ target_include_directories(bootloader PRIVATE
     third_lib/crc
     third_lib/sha256
     third_lib/micro-ecc
+    third_lib/mbedtls/include
+    third_lib/mbedtls/library
     third_lib/easylogger
     ${FIRMWARE_GENERATED_DIR}
     ${CMAKE_SOURCE_DIR}/shared

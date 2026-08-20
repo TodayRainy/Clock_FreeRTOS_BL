@@ -10,13 +10,15 @@ public enum MagicHeaderDataType : uint
 }
 
 /// <summary>
-/// XBIN v2的固定256字节固件描述头。上位机负责检查结构、CRC32和SHA-256，
-/// Bootloader使用设备内置公钥完成最终ECDSA签名验证。
+/// XBIN的固定256字节签名Header。v3在偏移256追加64字节AES-GCM描述；上位机
+/// 不持有解密密钥，最终ECDSA、GCM和明文摘要始终由Bootloader验证。
 /// </summary>
 public class MagicHeader
 {
     private const uint CurrentFormatVersion = 2;
     private const uint HeaderSize = 256;
+    private const int EncryptionHeaderOffset = 256;
+    private const int EncryptionHeaderSize = 64;
 
     public uint FormatVersion { get; private set; }
     public uint KeyId { get; private set; }
@@ -29,6 +31,11 @@ public class MagicHeader
     public byte[] ImageSha256 { get; private set; } = [];
     public string Version { get; private set; } = string.Empty;
     public uint ThisAddress { get; private set; }
+    public bool IsEncrypted { get; private set; }
+    public uint EncryptionKeyId { get; private set; }
+    public int HeaderCommitSize => IsEncrypted
+                                   ? EncryptionHeaderOffset + EncryptionHeaderSize
+                                   : (int)HeaderSize;
 
     /// <summary>
     /// 解析并检查待发送的XBIN。这里的SHA-256用于尽早发现本地文件损坏；公钥
@@ -59,6 +66,31 @@ public class MagicHeader
         ReadOnlySpan<byte> signature = xbin.AsSpan(160, 64);
         uint thisAddress = BitConverter.ToUInt32(xbin, 248);
         uint thisCrc32 = BitConverter.ToUInt32(xbin, 252);
+        bool encrypted = false;
+        uint encryptionKeyId = 0;
+
+        if (xbin.Length >= EncryptionHeaderOffset + EncryptionHeaderSize &&
+            BitConverter.ToUInt32(xbin, EncryptionHeaderOffset) == 0x33434E45)
+        {
+            uint encryptionFormat = BitConverter.ToUInt32(xbin, 260);
+            uint encryptionSize = BitConverter.ToUInt32(xbin, 264);
+            uint encryptionAlgorithm = BitConverter.ToUInt32(xbin, 268);
+            encryptionKeyId = BitConverter.ToUInt32(xbin, 272);
+            uint encryptionCrc = BitConverter.ToUInt32(xbin, 316);
+            uint computedEncryptionCrc = CRC.CRC32(xbin[256..316]);
+
+            if (encryptionFormat != 1 || encryptionSize != EncryptionHeaderSize ||
+                encryptionAlgorithm != 1 || encryptionKeyId == 0 ||
+                BitConverter.ToUInt32(xbin, 304) != 0 ||
+                BitConverter.ToUInt32(xbin, 308) != 0 ||
+                BitConverter.ToUInt32(xbin, 312) != 0 ||
+                encryptionCrc != computedEncryptionCrc)
+            {
+                Trace.WriteLine("AES-GCM加密描述无效");
+                return null;
+            }
+            encrypted = true;
+        }
 
         if (magic != 0x4D414749)
         {
@@ -86,18 +118,21 @@ public class MagicHeader
             return null;
         }
 
-        uint computedDataCrc32 = CRC.CRC32(xbin[(int)dataOffset..]);
-        if (computedDataCrc32 != dataCrc32)
+        if (!encrypted)
         {
-            Trace.WriteLine($"固件数据CRC32校验失败，expected: 0x{dataCrc32:X8}, got: 0x{computedDataCrc32:X8}");
-            return null;
-        }
+            uint computedDataCrc32 = CRC.CRC32(xbin[(int)dataOffset..]);
+            if (computedDataCrc32 != dataCrc32)
+            {
+                Trace.WriteLine($"固件数据CRC32校验失败，expected: 0x{dataCrc32:X8}, got: 0x{computedDataCrc32:X8}");
+                return null;
+            }
 
-        byte[] computedSha256 = SHA256.HashData(xbin.AsSpan((int)dataOffset));
-        if (!computedSha256.SequenceEqual(imageSha256))
-        {
-            Trace.WriteLine("固件数据SHA-256校验失败");
-            return null;
+            byte[] computedSha256 = SHA256.HashData(xbin.AsSpan((int)dataOffset));
+            if (!computedSha256.SequenceEqual(imageSha256))
+            {
+                Trace.WriteLine("固件数据SHA-256校验失败");
+                return null;
+            }
         }
 
         return new MagicHeader
@@ -113,6 +148,8 @@ public class MagicHeader
             ImageSha256 = imageSha256,
             Version = version,
             ThisAddress = thisAddress,
+            IsEncrypted = encrypted,
+            EncryptionKeyId = encryptionKeyId,
         };
     }
 }
