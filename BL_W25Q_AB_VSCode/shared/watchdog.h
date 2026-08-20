@@ -3,8 +3,8 @@
  * @brief Bootloader和应用共用的STM32独立看门狗最小接口。
  */
 
-#ifndef __WATCHDOG_H__
-#define __WATCHDOG_H__
+#ifndef CLOCK_F407_WATCHDOG_H
+#define CLOCK_F407_WATCHDOG_H
 
 /**
  * @brief 启动或重新配置独立看门狗。
@@ -18,4 +18,4 @@ void watchdog_init(void);
 /** @brief 刷新独立看门狗计数器。 */
 void watchdog_refresh(void);
 
-#endif /* __WATCHDOG_H__ */
+#endif /* CLOCK_F407_WATCHDOG_H */

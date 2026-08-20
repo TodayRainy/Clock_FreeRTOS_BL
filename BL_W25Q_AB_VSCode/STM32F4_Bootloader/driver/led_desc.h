@@ -1,5 +1,5 @@
-#ifndef __LED_DESC_H__
-#define __LED_DESC_H__
+#ifndef CLOCK_F407_LED_DESC_H
+#define CLOCK_F407_LED_DESC_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -7,10 +7,10 @@
 
 struct led_desc
 {
-    GPIO_TypeDef* Port;
-    uint32_t Pin;
-    BitAction OnBit;
-    BitAction OffBit;
+    GPIO_TypeDef *port;
+    uint32_t pin;
+    BitAction on_level;
+    BitAction off_level;
 };
 
-#endif /* __LED_DESC_H__ */
+#endif /* CLOCK_F407_LED_DESC_H */

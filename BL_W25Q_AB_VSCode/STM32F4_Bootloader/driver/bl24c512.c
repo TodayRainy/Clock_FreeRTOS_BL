@@ -3,9 +3,10 @@
  * @brief BL24C512软件I2C驱动，用于掉电安全的A/B状态记录。
  */
 
+#include "bl24c512.h"
+
 #include "stm32f4xx.h"
 #include "tim_delay.h"
-#include "bl24c512.h"
 
 /*
  * 原理图中 A0/A1/A2 和 WP 均接地，因此7位地址为0x50且允许写入。

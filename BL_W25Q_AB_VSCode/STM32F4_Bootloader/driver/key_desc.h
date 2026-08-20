@@ -1,5 +1,5 @@
-#ifndef __KEY_DESC_H__
-#define __KEY_DESC_H__
+#ifndef CLOCK_F407_KEY_DESC_H
+#define CLOCK_F407_KEY_DESC_H
 
 #include <stdint.h>
 #include "stm32f4xx.h"
@@ -13,4 +13,4 @@ struct key_desc
     BitAction press_level;
 };
 
-#endif /* __KEY_H__ */
+#endif /* CLOCK_F407_KEY_DESC_H */

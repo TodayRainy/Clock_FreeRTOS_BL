@@ -1,11 +1,11 @@
-#ifndef __STM32_FLASH_H__
-#define __STM32_FLASH_H__
+#ifndef CLOCK_F407_STM32_FLASH_H
+#define CLOCK_F407_STM32_FLASH_H
 
 #include <stdbool.h>
 #include <stdint.h>
 
-#define STM32_FLASH_BASE       0x08000000U
-#define STM32_FLASH_SIZE       (512 * 1024)
+#define STM32_FLASH_BASE       0x08000000u
+#define STM32_FLASH_SIZE       (512u * 1024u)
 
 /** @brief 锁定STM32内部Flash控制器。 */
 void stm32_flash_lock(void);
@@ -37,4 +37,4 @@ bool stm32_flash_erase(uint32_t address, uint32_t size);
  */
 bool stm32_flash_program(uint32_t address, const uint8_t *data, uint32_t size);
 
-#endif /* __STM32_FLASH_H__ */
+#endif /* CLOCK_F407_STM32_FLASH_H */

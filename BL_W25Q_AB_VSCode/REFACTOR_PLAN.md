@@ -108,8 +108,8 @@
 | 0 | 指导文件、分支和稳定基线 | 已完成 |
 | 1A | shared 契约、Header、签名与解密包装 | 已完成 |
 | 1B | BCR、固件槽和 Bootloader 状态机 | 已完成 |
-| 2 | 串口协议与 Bootloader 自研驱动 | 进行中 |
-| 3 | WeatherClock 应用、任务、健康确认、Wi-Fi 与 OTA | 未开始 |
+| 2 | 串口协议与 Bootloader 自研驱动 | 已完成 |
+| 3 | WeatherClock 应用、任务、健康确认、Wi-Fi 与 OTA | 进行中 |
 | 4 | WeatherClock 自研底层驱动 | 未开始 |
 | 5 | C# 上位机、Python 工具和项目说明 | 未开始 |
 | 6 | 完整主机/实板回归、发布与合并 | 未开始 |
@@ -177,6 +177,18 @@
 
 重点：帧边界、DMA、槽写保护、外设超时、Flash 擦写和跳转前反初始化。
 
+完成情况：
+
+- 保持串口帧、Opcode、错误码、波特率、DMA容量、SPI频率和硬件超时不变；
+- 将协议字节序辅助函数收敛为实际使用的 U8/U16/U32 小端接口，改为逐字节读写，
+  消除未对齐宽指针访问和无用的宏生成接口；
+- 统一板级资源、USART3、EEPROM、W25Q、内部Flash、TIM6、LED、按键和日志驱动的
+  Include、命名与注释，补齐跳转前资源边界和关键硬件时序说明；
+- terra medium 只读审阅未发现 P0～P2，指出 USART3 头文件把循环DMA误写成
+  RXNE中断，已修正文档；
+- GCC 零错误零警告，完整安全测试通过；Bootloader 增加 96 B，WeatherClock
+  长度和 SHA-256 与基线一致。
+
 ### 阶段 3：WeatherClock 应用
 
 重点文件：`main`、`app`、`health_monitor`、`ab_confirm`、`ota`、`wifi` 及页面入口。
@@ -215,6 +227,7 @@
 | 0 | 指导文件和计划 | `git diff --check` 通过；未修改固件 | 不涉及固件 | 不需要 | `docs: establish refactor rules and baseline` |
 | 1A | 共享契约、Header、签名和解密入口 | GCC、完整安全测试、terra 审阅通过 | 0 B；目标 BIN 哈希不变 | 不需要 | `refactor(formal): unify contracts and crypto comments` |
 | 1B | BCR、固件槽和 Bootloader 状态机 | GCC、完整安全测试、terra 审阅通过 | 0 B；Bootloader 哈希变化 | 阶段 6 统一验证 | `refactor(boot): clarify A/B state and install flow` |
+| 2 | 串口协议和 Bootloader 自研驱动 | GCC、完整安全测试、terra 审阅通过 | BL +96 B；App 0 B且哈希不变 | 阶段 6 统一验证 | `refactor(boot): unify protocol and driver style` |
 
 ## 8. 待讨论问题
 

@@ -6,8 +6,9 @@
  * 各复制一层标准外设库封装更清楚，也避免额外链接未使用的IWDG接口。
  */
 
-#include "stm32f4xx.h"
 #include "watchdog.h"
+
+#include "stm32f4xx.h"
 
 #define IWDG_KEY_ENABLE_WRITE  0x5555u
 #define IWDG_KEY_RELOAD        0xAAAAu

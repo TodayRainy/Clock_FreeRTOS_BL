@@ -1,34 +1,41 @@
-#include <stdint.h>
-#include <string.h>
-#include "stm32f4xx.h"
+/**
+ * @file console.c
+ * @brief Bootloader调试日志使用的USART1轮询输出驱动。
+ *
+ * USART1只承载日志，不参与USART3固件升级协议，因此这里保留简单的阻塞发送。
+ */
+
 #include "console.h"
+
+#include "stm32f4xx.h"
 
 static void console_io_init(void)
 {
+    GPIO_InitTypeDef gpio;
+
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource9, GPIO_AF_USART1);
     GPIO_PinAFConfig(GPIOA, GPIO_PinSource10, GPIO_AF_USART1);
 
-    GPIO_InitTypeDef GPIO_InitStructure;
-    GPIO_StructInit(&GPIO_InitStructure);
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
-    GPIO_InitStructure.GPIO_Speed = GPIO_High_Speed;
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_9 | GPIO_Pin_10;
-    GPIO_Init(GPIOA, &GPIO_InitStructure);
+    GPIO_StructInit(&gpio);
+    gpio.GPIO_Mode = GPIO_Mode_AF;
+    gpio.GPIO_Speed = GPIO_High_Speed;
+    gpio.GPIO_Pin = GPIO_Pin_9 | GPIO_Pin_10;
+    GPIO_Init(GPIOA, &gpio);
 }
 
 static void console_usart_init(void)
 {
-    USART_InitTypeDef USART_InitStructure;
-    USART_StructInit(&USART_InitStructure);
+    USART_InitTypeDef usart;
 
-    USART_InitStructure.USART_BaudRate = 115200u;
-    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-    USART_InitStructure.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
-    USART_InitStructure.USART_Parity = USART_Parity_No;
-    USART_InitStructure.USART_StopBits = USART_StopBits_1;
-    USART_InitStructure.USART_WordLength = USART_WordLength_8b;
+    USART_StructInit(&usart);
+    usart.USART_BaudRate = 115200u;
+    usart.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+    usart.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
+    usart.USART_Parity = USART_Parity_No;
+    usart.USART_StopBits = USART_StopBits_1;
+    usart.USART_WordLength = USART_WordLength_8b;
 
-    USART_Init(USART1, &USART_InitStructure);
+    USART_Init(USART1, &usart);
     USART_Cmd(USART1, ENABLE);
 }
 
@@ -40,9 +47,11 @@ void console_init(void)
 
 void console_write(const char str[], uint32_t length)
 {
-    for (uint32_t i = 0; i < length; i++)
+    uint32_t index;
+
+    for (index = 0u; index < length; ++index)
     {
         while (USART_GetFlagStatus(USART1, USART_FLAG_TXE) == RESET);
-        USART_SendData(USART1, str[i]);
+        USART_SendData(USART1, (uint16_t)str[index]);
     }
 }

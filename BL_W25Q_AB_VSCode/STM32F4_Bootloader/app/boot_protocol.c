@@ -9,22 +9,23 @@
  * BOOT命令只向bootloader.c返回动作，由统一的A/B状态机做最终决定。
  */
 
-#include <stdbool.h>
+#include "boot_protocol.h"
+
 #include <stdint.h>
 #include <string.h>
-#include "stm32f4xx.h"
+
+#include "bitops.h"
 #include "bl_usart.h"
-#include "tim_delay.h"
-#include "w25q.h"
 #include "bl24c512.h"
 #include "boot_state.h"
-#include "firmware_slot.h"
-#include "magic_header.h"
-#include "firmware_security_policy.h"
-#include "boot_protocol.h"
 #include "crc16.h"
 #include "crc32.h"
-#include "utils.h"
+#include "firmware_security_policy.h"
+#include "firmware_slot.h"
+#include "magic_header.h"
+#include "stm32f4xx.h"
+#include "tim_delay.h"
+#include "w25q.h"
 
 #define LOG_TAG    "protocol"
 #define LOG_LVL    ELOG_LVL_INFO
@@ -317,7 +318,7 @@ static void handle_w25_info(void)
 
 static void handle_w25_read(void)
 {
-    uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
+    const uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
     uint8_t chip;
     uint32_t address;
     uint16_t size;
@@ -358,7 +359,7 @@ static void handle_eeprom_info(void)
 
 static void handle_eeprom_read(void)
 {
-    uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
+    const uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
     uint16_t address;
     uint16_t size;
 
@@ -388,7 +389,7 @@ static void handle_eeprom_read(void)
 
 static void handle_eeprom_write(void)
 {
-    uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
+    const uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
     uint16_t address;
     uint16_t size;
 
@@ -551,8 +552,8 @@ static void handle_security_status(void)
  */
 static void handle_slot_resume_scan(void)
 {
-    uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
-    uint8_t invalid_magic[4] = {0, 0, 0, 0};
+    const uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
+    const uint8_t invalid_magic[4] = {0u, 0u, 0u, 0u};
     uint8_t response[4];
     uint8_t slot;
     uint16_t block_count;
@@ -658,7 +659,7 @@ static void handle_slot_activate(void)
 {
     boot_state_t state;
     magic_header_t header;
-    uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
+    const uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
     uint32_t expected_crc;
     uint8_t slot;
 
@@ -711,7 +712,7 @@ static void handle_slot_activate(void)
 
 static void handle_w25_erase(void)
 {
-    uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
+    const uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
     uint8_t slot;
     uint32_t address;
     uint32_t size;
@@ -754,7 +755,7 @@ static void handle_w25_erase(void)
  */
 static void handle_w25_program(bool async_ack)
 {
-    uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
+    const uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
     uint8_t slot;
     uint32_t address;
     uint16_t size;
@@ -922,13 +923,13 @@ static bool parse_byte(uint8_t byte)
             {
                 uint16_t received_crc = get_u16(
                     packet_buffer + PACKET_PAYLOAD_OFFSET + packet_payload_length);
-                uint16_t calculated_crc = crc16(
+                uint16_t calculated_crc16 = crc16(
                     packet_buffer, PACKET_PAYLOAD_OFFSET + packet_payload_length);
 
-                complete = received_crc == calculated_crc;
+                complete = received_crc == calculated_crc16;
                 if (!complete)
                     log_w("CRC16 mismatch: expected %04X, got %04X",
-                          received_crc, calculated_crc);
+                          received_crc, calculated_crc16);
                 packet_index = 0;
                 packet_state = PACKET_STATE_HEADER;
             }

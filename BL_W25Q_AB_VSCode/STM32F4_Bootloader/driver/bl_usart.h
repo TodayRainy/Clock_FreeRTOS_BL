@@ -1,5 +1,5 @@
-#ifndef __BL_USART_H__
-#define __BL_USART_H__
+#ifndef CLOCK_F407_BL_USART_H
+#define CLOCK_F407_BL_USART_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -27,7 +27,7 @@ void bl_usart_deinit(void);
  * @brief 在协议已经应答后切换USART3波特率。
  *
  * 本函数会等待当前响应的停止位发送完成，再短暂关闭USART、更新BRR并恢复
- * RXNE中断。Bootloader每次复位仍由 @ref bl_usart_init 从115200开始。
+ * 循环DMA接收请求。Bootloader每次复位仍由 @ref bl_usart_init 从115200开始。
  *
  * @param[in] baud_rate 新波特率。
  */
@@ -53,4 +53,4 @@ bool bl_usart_read_byte(uint8_t *data);
  */
 bool bl_usart_data_pending(void);
 
-#endif /* __BL_USART_H__ */
+#endif /* CLOCK_F407_BL_USART_H */

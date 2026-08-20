@@ -7,10 +7,11 @@
  * 为很小的数据量增加额外状态。驱动只实现A/B固件存储所需的操作。
  */
 
-#include "stm32f4xx.h"
-#include "watchdog.h"
-#include "tim_delay.h"
 #include "w25q.h"
+
+#include "stm32f4xx.h"
+#include "tim_delay.h"
+#include "watchdog.h"
 
 #define W25Q_CS_PORT       GPIOE
 #define W25Q_A_CS_PIN      GPIO_Pin_13
@@ -389,6 +390,7 @@ bool w25q_erase(w25q_chip_t chip, uint32_t address, uint32_t size)
 bool w25q_program(w25q_chip_t chip, uint32_t address, const uint8_t *data, uint32_t size)
 {
     uint32_t chunk;
+    uint32_t index;
 
     while (size)
     {
@@ -403,8 +405,8 @@ bool w25q_program(w25q_chip_t chip, uint32_t address, const uint8_t *data, uint3
         spi_transfer((uint8_t)(address >> 16));
         spi_transfer((uint8_t)(address >> 8));
         spi_transfer((uint8_t)address);
-        for (uint32_t i = 0; i < chunk; ++i)
-            spi_transfer(data[i]);
+        for (index = 0u; index < chunk; ++index)
+            spi_transfer(data[index]);
         release_chip(chip);
 
         if (!wait_ready(chip, 100))

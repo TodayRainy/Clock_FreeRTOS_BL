@@ -1,5 +1,5 @@
-#ifndef __TIM_DELAY_H__
-#define __TIM_DELAY_H__
+#ifndef CLOCK_F407_TIM_DELAY_H
+#define CLOCK_F407_TIM_DELAY_H
 
 #include <stdint.h>
 
@@ -21,4 +21,4 @@ void tim_delay_us(uint32_t us);
 /** @brief 忙等待指定毫秒数。 */
 void tim_delay_ms(uint32_t ms);
 
-#endif /* __TIM_DELAY_H__ */
+#endif /* CLOCK_F407_TIM_DELAY_H */

@@ -1,5 +1,14 @@
-#include "stm32f4xx.h"
+/**
+ * @file bl_usart.c
+ * @brief Bootloader协议使用的USART3轮询发送和循环DMA接收驱动。
+ *
+ * DMA只负责持续接收，协议层通过独立读游标消费字节。驱动不解释帧内容，也不
+ * 决定高速波特率的超时恢复策略。
+ */
+
 #include "bl_usart.h"
+
+#include "stm32f4xx.h"
 
 /* Bootloader协议串口：USART3，PB10/TX，PB11/RX，8-N-1。 */
 #define RX_DMA_STREAM       DMA1_Stream1
@@ -11,15 +20,15 @@ static uint16_t rx_read_position;
 
 static void usart_io_init(void)
 {
-    GPIO_InitTypeDef GPIO_InitStructure;
-    GPIO_StructInit(&GPIO_InitStructure);
+    GPIO_InitTypeDef gpio;
 
-    GPIO_InitStructure.GPIO_Pin = GPIO_Pin_10 | GPIO_Pin_11;
-    GPIO_InitStructure.GPIO_Mode = GPIO_Mode_AF;
-    GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;
-    GPIO_InitStructure.GPIO_OType = GPIO_OType_PP;
-    GPIO_InitStructure.GPIO_PuPd = GPIO_PuPd_UP;
-    GPIO_Init(GPIOB, &GPIO_InitStructure);
+    GPIO_StructInit(&gpio);
+    gpio.GPIO_Pin = GPIO_Pin_10 | GPIO_Pin_11;
+    gpio.GPIO_Mode = GPIO_Mode_AF;
+    gpio.GPIO_Speed = GPIO_Speed_50MHz;
+    gpio.GPIO_OType = GPIO_OType_PP;
+    gpio.GPIO_PuPd = GPIO_PuPd_UP;
+    GPIO_Init(GPIOB, &gpio);
 
     GPIO_PinAFConfig(GPIOB, GPIO_PinSource10, GPIO_AF_USART3);
     GPIO_PinAFConfig(GPIOB, GPIO_PinSource11, GPIO_AF_USART3);
@@ -62,16 +71,16 @@ static void usart_dma_init(void)
 
 static void usart_lowlevel_init(uint32_t baud_rate)
 {
-    USART_InitTypeDef USART_InitStructure;
-    USART_StructInit(&USART_InitStructure);
+    USART_InitTypeDef usart;
 
-    USART_InitStructure.USART_BaudRate = baud_rate;
-    USART_InitStructure.USART_WordLength = USART_WordLength_8b;
-    USART_InitStructure.USART_StopBits = USART_StopBits_1;
-    USART_InitStructure.USART_Parity = USART_Parity_No;
-    USART_InitStructure.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
-    USART_InitStructure.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
-    USART_Init(USART3, &USART_InitStructure);
+    USART_StructInit(&usart);
+    usart.USART_BaudRate = baud_rate;
+    usart.USART_WordLength = USART_WordLength_8b;
+    usart.USART_StopBits = USART_StopBits_1;
+    usart.USART_Parity = USART_Parity_No;
+    usart.USART_Mode = USART_Mode_Rx | USART_Mode_Tx;
+    usart.USART_HardwareFlowControl = USART_HardwareFlowControl_None;
+    USART_Init(USART3, &usart);
     USART_DMACmd(USART3, USART_DMAReq_Rx, ENABLE);
     USART_Cmd(USART3, ENABLE);
 }

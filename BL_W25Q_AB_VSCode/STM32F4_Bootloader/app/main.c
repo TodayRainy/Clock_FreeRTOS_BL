@@ -3,15 +3,13 @@
  * @brief Bootloader底层初始化和A/B主流程入口。
  */
 
-#include <stdint.h>
-#include <stdio.h>
-#include "console.h"
-#include "tim_delay.h"
-#include "watchdog.h"
-#include "elog.h"
 #include "bootloader.h"
 
-extern void board_lowlevel_init(void);
+#include "board.h"
+#include "console.h"
+#include "elog.h"
+#include "tim_delay.h"
+#include "watchdog.h"
 
 int main(void)
 {

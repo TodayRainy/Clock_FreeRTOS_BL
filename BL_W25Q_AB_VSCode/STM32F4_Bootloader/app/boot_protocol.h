@@ -3,8 +3,8 @@
  * @brief Bootloader串口协议的接收、解析和命令执行接口。
  */
 
-#ifndef __BOOT_PROTOCOL_H__
-#define __BOOT_PROTOCOL_H__
+#ifndef CLOCK_F407_BOOT_PROTOCOL_H
+#define CLOCK_F407_BOOT_PROTOCOL_H
 
 #include <stdbool.h>
 
@@ -52,4 +52,4 @@ bool boot_protocol_data_pending(void);
  */
 boot_protocol_action_t boot_protocol_process(void);
 
-#endif /* __BOOT_PROTOCOL_H__ */
+#endif /* CLOCK_F407_BOOT_PROTOCOL_H */

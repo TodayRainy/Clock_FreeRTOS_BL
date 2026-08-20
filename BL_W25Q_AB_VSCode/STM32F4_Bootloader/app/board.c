@@ -1,8 +1,18 @@
+/**
+ * @file board.c
+ * @brief Bootloader板级时钟、日志输出和LED/按键描述对象。
+ *
+ * 各驱动仍负责配置自己的外设寄存器；本模块只集中板级资源映射，避免协议和
+ * 状态机直接依赖GPIO端口与引脚。
+ */
+
+#include "board.h"
+
+#include <stdint.h>
 #include <stdio.h>
+
 #include "stm32f4xx.h"
-#include "key.h"
 #include "key_desc.h"
-#include "led.h"
 #include "led_desc.h"
 
 void board_lowlevel_init(void)
@@ -37,20 +47,20 @@ int fputc(int ch, FILE *f)
     return __io_putchar(ch);
 }
 
-static struct led_desc _led1 = { GPIOE, GPIO_Pin_9, Bit_RESET, Bit_SET};
-static struct led_desc _led2 = { GPIOB, GPIO_Pin_0, Bit_RESET, Bit_SET};
-static struct led_desc _led3 = { GPIOB, GPIO_Pin_1, Bit_RESET, Bit_SET};
-led_desc_t led1 = &_led1;
-led_desc_t led2 = &_led2;
-led_desc_t led3 = &_led3;
+static struct led_desc led1_desc = {GPIOE, GPIO_Pin_9, Bit_RESET, Bit_SET};
+static struct led_desc led2_desc = {GPIOB, GPIO_Pin_0, Bit_RESET, Bit_SET};
+static struct led_desc led3_desc = {GPIOB, GPIO_Pin_1, Bit_RESET, Bit_SET};
+led_desc_t led1 = &led1_desc;
+led_desc_t led2 = &led2_desc;
+led_desc_t led3 = &led3_desc;
 
-static struct key_desc _key1 = { GPIOA, GPIO_Pin_0, GPIO_PuPd_DOWN, Bit_SET};
+static struct key_desc key1_desc = {GPIOA, GPIO_Pin_0, GPIO_PuPd_DOWN, Bit_SET};
 /*
  * 板上 KEY2 松开时为高电平，按下后把 PC4 拉低。
  * 使用内部上拉可以让按键线路在外部上拉缺失时仍保持确定的松开状态。
  */
-static struct key_desc _key2 = { GPIOC, GPIO_Pin_4, GPIO_PuPd_UP, Bit_RESET};
-static struct key_desc _key3 = { GPIOC, GPIO_Pin_5, GPIO_PuPd_DOWN, Bit_SET};
-key_desc_t key1 = &_key1;
-key_desc_t key2 = &_key2;
-key_desc_t key3 = &_key3;
+static struct key_desc key2_desc = {GPIOC, GPIO_Pin_4, GPIO_PuPd_UP, Bit_RESET};
+static struct key_desc key3_desc = {GPIOC, GPIO_Pin_5, GPIO_PuPd_DOWN, Bit_SET};
+key_desc_t key1 = &key1_desc;
+key_desc_t key2 = &key2_desc;
+key_desc_t key3 = &key3_desc;

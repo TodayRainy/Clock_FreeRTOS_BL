@@ -1,13 +1,9 @@
-#ifndef __UTILS_H__
-#define __UTILS_H__
+#ifndef CLOCK_F407_UTILS_H
+#define CLOCK_F407_UTILS_H
 
-#include "bitops.h"
+#include <stddef.h>
 
 #define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+#define offset_of(type, member) offsetof(type, member)
 
-#define offset_of(type, member) ((size_t) &((type *)0)->member)
-#define container_of(ptr, type, member) ({          \
-    const typeof(((type *)0)->member) *__mptr = (ptr); \
-    (type *)((char *)__mptr - offset_of(type, member)); })
-
-#endif /* __UTILS_H__ */
+#endif /* CLOCK_F407_UTILS_H */

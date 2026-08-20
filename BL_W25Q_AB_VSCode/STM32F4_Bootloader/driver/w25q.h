@@ -1,5 +1,5 @@
-#ifndef __W25Q_H__
-#define __W25Q_H__
+#ifndef CLOCK_F407_W25Q_H
+#define CLOCK_F407_W25Q_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -91,4 +91,4 @@ bool w25q_erase(w25q_chip_t chip, uint32_t address, uint32_t size);
  */
 bool w25q_program(w25q_chip_t chip, uint32_t address, const uint8_t *data, uint32_t size);
 
-#endif /* __W25Q_H__ */
+#endif /* CLOCK_F407_W25Q_H */
