@@ -7,10 +7,13 @@
  * 固件，并仅在全部检查通过后进入现有的 A/B 安装状态机。
  */
 
+#include "ota_request.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
+
 #include "bl24c512.h"
 #include "boot_state.h"
 #include "crc32.h"
@@ -19,7 +22,6 @@
 #include "firmware_slot.h"
 #include "magic_header.h"
 #include "ota_contract.h"
-#include "ota_request.h"
 
 #define LOG_TAG    "ota"
 #define LOG_LVL    ELOG_LVL_INFO
@@ -30,15 +32,15 @@
  */
 static bool request_valid(const ota_request_t *request)
 {
-    uint32_t crc;
+    uint32_t calculated_crc32;
 
     if (request->magic != OTA_REQUEST_MAGIC ||
         request->target_slot >= BOOT_SLOT_COUNT)
         return false;
 
-    crc = crc32((const uint8_t *)request,
-                offsetof(ota_request_t, record_crc32));
-    return crc == request->record_crc32;
+    calculated_crc32 = crc32((const uint8_t *)request,
+                             offsetof(ota_request_t, record_crc32));
+    return calculated_crc32 == request->record_crc32;
 }
 
 /**
@@ -64,7 +66,7 @@ void ota_request_process(void)
     magic_header_t header;
     const magic_header_t *current = (const magic_header_t *)MAGIC_HEADER_ADDR;
     firmware_release_decision_t release_decision;
-    uint32_t xbin_size;
+    uint32_t expected_xbin_size;
 
     if (!bl24c512_read(OTA_REQUEST_ADDR, (uint8_t *)&request,
                        sizeof(request)) ||
@@ -88,8 +90,8 @@ void ota_request_process(void)
         return;
     }
 
-    xbin_size = header.data_offset + header.data_length;
-    if (request.xbin_size != xbin_size ||
+    expected_xbin_size = header.data_offset + header.data_length;
+    if (request.xbin_size != expected_xbin_size ||
         request.header_crc32 != header.header_crc32 ||
         request.payload_crc32 != header.data_crc32 ||
         request.security_version != header.security_version ||
@@ -134,6 +136,10 @@ void ota_request_process(void)
         return;
     }
 
+    /*
+     * BCR 先提交 InstallPending，内部 Flash 留给下一次干净启动处理。
+     * 此处掉电时请求仍在，下一次启动可以再次完成同一提交。
+     */
     state.phase = BOOT_PHASE_INSTALL_PENDING;
     state.pending_slot = request.target_slot;
     state.pending_crc32 = header.data_crc32;

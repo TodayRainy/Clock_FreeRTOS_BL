@@ -3,8 +3,8 @@
  * @brief 处理 WeatherClock 留在 EEPROM 中的 OTA 安装请求。
  */
 
-#ifndef __OTA_REQUEST_H__
-#define __OTA_REQUEST_H__
+#ifndef CLOCK_F407_OTA_REQUEST_H
+#define CLOCK_F407_OTA_REQUEST_H
 
 /**
  * @brief 检查并处理一次 OTA 安装请求。
@@ -15,4 +15,4 @@
  */
 void ota_request_process(void);
 
-#endif /* __OTA_REQUEST_H__ */
+#endif /* CLOCK_F407_OTA_REQUEST_H */

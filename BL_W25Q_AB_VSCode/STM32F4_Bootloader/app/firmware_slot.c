@@ -3,7 +3,10 @@
  * @brief 内部固件和外部A/B槽的校验与安装实现。
  */
 
+#include "firmware_slot.h"
+
 #include <string.h>
+
 #include "w25q.h"
 #include "stm32_flash.h"
 #include "crc32.h"
@@ -12,17 +15,16 @@
 #include "firmware_auth.h"
 #include "firmware_decryption.h"
 #include "magic_header.h"
-#include "firmware_slot.h"
 
-#define INSTALL_CHUNK_SIZE 4096u
-#define INSTALL_BUFFER_SIZE (INSTALL_CHUNK_SIZE + 16u)
+#define INSTALL_CHUNK_SIZE   4096u
+#define INSTALL_BUFFER_SIZE  (INSTALL_CHUNK_SIZE + 16u)
+
+#define SRAM_START           0x20000000u
+#define SRAM_END             0x20020000u
+#define CCMRAM_START         0x10000000u
+#define CCMRAM_END           0x10010000u
 
 static uint8_t install_buffer[INSTALL_BUFFER_SIZE];
-
-#define SRAM_START     0x20000000u
-#define SRAM_END       0x20020000u
-#define CCMRAM_START   0x10000000u
-#define CCMRAM_END     0x10010000u
 
 /**
  * @brief 从固件字节流读取一个小端32位整数。
@@ -126,14 +128,14 @@ bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
     uint32_t address;
     uint32_t remaining;
     uint32_t chunk;
-    uint32_t state;
+    uint32_t crc_state;
     uint32_t plaintext_length = 0;
     uint8_t digest[SHA256_DIGEST_SIZE];
     uint8_t vectors[8] = { 0 };
     uint32_t vector_length = 0;
     sha256_context_t sha;
     bool decrypt_active = false;
-    bool ok = false;
+    bool data_valid = false;
 
     if (slot >= W25Q_CHIP_COUNT)
         return false;
@@ -144,7 +146,7 @@ bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
 
     address = header->data_offset;
     remaining = header->data_length;
-    state = crc32_begin();
+    crc_state = crc32_begin();
     sha256_init(&sha);
     while (remaining)
     {
@@ -165,7 +167,8 @@ bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
             memcpy(vectors + vector_length, install_buffer, copy);
             vector_length += copy;
         }
-        state = crc32_update(state, install_buffer, (uint32_t)output_length);
+        crc_state = crc32_update(crc_state, install_buffer,
+                                 (uint32_t)output_length);
         sha256_update(&sha, install_buffer, (uint32_t)output_length);
         plaintext_length += (uint32_t)output_length;
         watchdog_refresh();
@@ -184,22 +187,24 @@ bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
             goto out;
         }
         decrypt_active = false;
-        state = crc32_update(state, install_buffer, (uint32_t)output_length);
+        crc_state = crc32_update(crc_state, install_buffer,
+                                 (uint32_t)output_length);
         sha256_update(&sha, install_buffer, (uint32_t)output_length);
         plaintext_length += (uint32_t)output_length;
     }
     sha256_final(&sha, digest);
 
-    ok = plaintext_length == header->data_length && vector_length == sizeof(vectors) &&
-         crc32_end(state) == header->data_crc32 &&
-         firmware_hash_matches(header, digest) &&
-         application_vector_valid(read_u32_le(vectors), read_u32_le(vectors + 4u),
-                                  header);
+    data_valid = plaintext_length == header->data_length &&
+                 vector_length == sizeof(vectors) &&
+                 crc32_end(crc_state) == header->data_crc32 &&
+                 firmware_hash_matches(header, digest) &&
+                 application_vector_valid(read_u32_le(vectors),
+                                          read_u32_le(vectors + 4u), header);
 
 out:
     if (decrypt_active)
         firmware_decryption_abort(&decrypt_context);
-    return ok;
+    return data_valid;
 }
 
 /**
@@ -268,14 +273,14 @@ bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
     uint32_t chunk;
     uint32_t written = 0;
     bool decrypt_active = false;
-    bool ok = false;
+    bool installed = false;
 
     if (slot >= W25Q_CHIP_COUNT || verified_header == NULL)
         return false;
 
     /*
-     * A/B状态机刚刚完整验证过这个槽。复制Header可避免安装过程中依赖调用方
-     * 的栈对象，同时省去对同一份约300 KiB固件的第二次连续读取。
+     * A/B 状态机刚刚完整验证过这个槽。复制 Header 可避免安装过程中依赖
+     * 调用方的栈对象，同时省去对同一份固件的第二次连续读取。
      */
     header = *verified_header;
 
@@ -336,17 +341,18 @@ bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
         goto out;
 
     /* 数据确认无误后，最后写入320字节Formal Header，完成原子式提交。 */
-    if (!stm32_flash_program(MAGIC_HEADER_ADDR, (const uint8_t *)&header, sizeof(header)))
+    if (!stm32_flash_program(MAGIC_HEADER_ADDR, (const uint8_t *)&header,
+                             sizeof(header)))
         goto out;
 
     /* 验证刚写入Flash的Header，而不是仍在RAM中的源副本。 */
     header = *(const magic_header_t *)MAGIC_HEADER_ADDR;
-    ok = magic_header_validate_data(&header) &&
-         firmware_authenticate_header(&header);
+    installed = magic_header_validate_data(&header) &&
+                firmware_authenticate_header(&header);
 
 out:
     if (decrypt_active)
         firmware_decryption_abort(&decrypt_context);
     stm32_flash_lock();
-    return ok;
+    return installed;
 }

@@ -1,5 +1,10 @@
-#ifndef __BOOT_STATE_H__
-#define __BOOT_STATE_H__
+/**
+ * @file boot_state.h
+ * @brief A/B 启动控制记录的默认值、双副本读取和持久化接口。
+ */
+
+#ifndef CLOCK_F407_BOOT_STATE_H
+#define CLOCK_F407_BOOT_STATE_H
 
 #include <stdbool.h>
 #include "../../shared/ab_boot_contract.h"
@@ -34,4 +39,4 @@ bool boot_state_load(boot_state_t *state);
  */
 bool boot_state_save(boot_state_t *state);
 
-#endif /* __BOOT_STATE_H__ */
+#endif /* CLOCK_F407_BOOT_STATE_H */

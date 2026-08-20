@@ -107,8 +107,8 @@
 |---|---|---|
 | 0 | 指导文件、分支和稳定基线 | 已完成 |
 | 1A | shared 契约、Header、签名与解密包装 | 已完成 |
-| 1B | BCR、固件槽和 Bootloader 状态机 | 进行中 |
-| 2 | 串口协议与 Bootloader 自研驱动 | 未开始 |
+| 1B | BCR、固件槽和 Bootloader 状态机 | 已完成 |
+| 2 | 串口协议与 Bootloader 自研驱动 | 进行中 |
 | 3 | WeatherClock 应用、任务、健康确认、Wi-Fi 与 OTA | 未开始 |
 | 4 | WeatherClock 自研底层驱动 | 未开始 |
 | 5 | C# 上位机、Python 工具和项目说明 | 未开始 |
@@ -160,6 +160,16 @@
 
 重点：掉电恢复、Header 最后提交、Trial 次数、确认槽保护、迁移采用和人工救援。
 
+完成情况：
+
+- 统一 BCR 双副本变量、校验结果和安装结果命名；
+- 补齐 A/B 核心头文件契约和掉电安全代码段说明；
+- 把按键采样周期集中为一个模块常量，数值与行为保持不变；
+- terra medium 只读审阅未发现 P0～P2，指出 `boot_state.c` 缺少直接
+  `<stdint.h>`，已修正；
+- GCC 零错误零警告，完整安全测试通过；
+- Bootloader 仍为 34,800 B，WeatherClock BIN 与基线完全一致。
+
 ### 阶段 2：协议与 Bootloader 驱动
 
 重点文件：`boot_protocol`、`bl_usart`、`w25q`、`bl24c512`、`stm32_flash`、
@@ -204,6 +214,7 @@
 | Baseline | Formal 1.0.0 | GCC、.NET、完整安全测试已通过 | BL 34,800 B；App 158,024 B | A/B、串口、断点复用已通过 | `5b64b2a` |
 | 0 | 指导文件和计划 | `git diff --check` 通过；未修改固件 | 不涉及固件 | 不需要 | `docs: establish refactor rules and baseline` |
 | 1A | 共享契约、Header、签名和解密入口 | GCC、完整安全测试、terra 审阅通过 | 0 B；目标 BIN 哈希不变 | 不需要 | `refactor(formal): unify contracts and crypto comments` |
+| 1B | BCR、固件槽和 Bootloader 状态机 | GCC、完整安全测试、terra 审阅通过 | 0 B；Bootloader 哈希变化 | 阶段 6 统一验证 | `refactor(boot): clarify A/B state and install flow` |
 
 ## 8. 待讨论问题
 

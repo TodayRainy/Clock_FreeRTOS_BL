@@ -6,9 +6,12 @@
  * Opcode处理位于boot_protocol.c，外部槽读写与安装位于firmware_slot.c。
  */
 
+#include "bootloader.h"
+
 #include <stdbool.h>
 #include <stdint.h>
 #include <string.h>
+
 #include "stm32f4xx.h"
 #include "board.h"
 #include "boot_protocol.h"
@@ -21,13 +24,13 @@
 #include "firmware_slot.h"
 #include "magic_header.h"
 #include "ota_request.h"
-#include "bootloader.h"
 
 #define LOG_TAG    "boot"
 #define LOG_LVL    ELOG_LVL_INFO
 #include "elog.h"
 
 #define BOOT_ENTRY_WINDOW_MS  3000u
+#define BOOT_KEY_SAMPLE_MS    10u
 
 extern void JumpApp(uint32_t base);
 
@@ -232,12 +235,12 @@ static bool recover_without_state(boot_state_t *state)
  * 发布内容；本函数只写BCR，不复制或重写任何固件数据。
  */
 static bool adopt_matching_slot(boot_state_t *state, bool state_found,
-                                const magic_header_t *internal)
+                                const magic_header_t *internal_header)
 {
-    boot_state_t adopted;
+    boot_state_t adopted_state;
     magic_header_t slot_header;
     uint32_t previous_sequence;
-    uint32_t previous_minimum;
+    uint32_t previous_security_floor;
     uint8_t slot;
 
     /*
@@ -248,39 +251,39 @@ static bool adopt_matching_slot(boot_state_t *state, bool state_found,
         state_found = boot_state_load(state);
 
     previous_sequence = state->sequence;
-    previous_minimum = state->minimum_security_version;
+    previous_security_floor = state->minimum_security_version;
     if (state_found &&
-        internal->security_version < state->minimum_security_version)
+        internal_header->security_version < state->minimum_security_version)
         return false;
 
     for (slot = 0; slot < BOOT_SLOT_COUNT; ++slot)
     {
         if (!firmware_slot_validate(slot, &slot_header) ||
-            slot_header.data_length != internal->data_length ||
-            slot_header.data_crc32 != internal->data_crc32 ||
-            slot_header.security_version != internal->security_version ||
-            slot_header.release_sequence != internal->release_sequence ||
-            slot_header.signing_key_id != internal->signing_key_id ||
-            memcmp(slot_header.image_sha256, internal->image_sha256,
-                   sizeof(internal->image_sha256)) != 0 ||
-            memcmp(slot_header.version, internal->version,
-                   sizeof(internal->version)) != 0)
+            slot_header.data_length != internal_header->data_length ||
+            slot_header.data_crc32 != internal_header->data_crc32 ||
+            slot_header.security_version != internal_header->security_version ||
+            slot_header.release_sequence != internal_header->release_sequence ||
+            slot_header.signing_key_id != internal_header->signing_key_id ||
+            memcmp(slot_header.image_sha256, internal_header->image_sha256,
+                   sizeof(internal_header->image_sha256)) != 0 ||
+            memcmp(slot_header.version, internal_header->version,
+                   sizeof(internal_header->version)) != 0)
             continue;
 
         log_w("adopting slot %u matching internal Formal image", slot);
-        boot_state_default(&adopted);
+        boot_state_default(&adopted_state);
         /* 双副本选择最新sequence；迁移时必须越过仍留在另一页的旧记录。 */
-        adopted.sequence = state_found ? previous_sequence : 0u;
-        adopted.active_slot = slot;
-        adopted.active_crc32 = internal->data_crc32;
-        adopted.minimum_security_version =
-            previous_minimum > internal->security_version ?
-            previous_minimum : internal->security_version;
-        if (!boot_state_save(&adopted))
+        adopted_state.sequence = state_found ? previous_sequence : 0u;
+        adopted_state.active_slot = slot;
+        adopted_state.active_crc32 = internal_header->data_crc32;
+        adopted_state.minimum_security_version =
+            previous_security_floor > internal_header->security_version ?
+            previous_security_floor : internal_header->security_version;
+        if (!boot_state_save(&adopted_state))
             return false;
 
         /* 只有EEPROM提交成功，才让本次启动继续使用新状态。 */
-        *state = adopted;
+        *state = adopted_state;
         return true;
     }
     return false;
@@ -384,9 +387,10 @@ static bool key_trap_requested(void)
 {
     uint32_t elapsed;
 
-    for (elapsed = 0; elapsed < BOOT_ENTRY_WINDOW_MS; elapsed += 10)
+    for (elapsed = 0; elapsed < BOOT_ENTRY_WINDOW_MS;
+         elapsed += BOOT_KEY_SAMPLE_MS)
     {
-        tim_delay_ms(10);
+        tim_delay_ms(BOOT_KEY_SAMPLE_MS);
         if (!key_read(key2))
             return false;
     }
@@ -401,9 +405,10 @@ static bool serial_trap_requested(void)
 {
     uint32_t elapsed;
 
-    for (elapsed = 0; elapsed < BOOT_ENTRY_WINDOW_MS; elapsed += 10)
+    for (elapsed = 0; elapsed < BOOT_ENTRY_WINDOW_MS;
+         elapsed += BOOT_KEY_SAMPLE_MS)
     {
-        tim_delay_ms(10);
+        tim_delay_ms(BOOT_KEY_SAMPLE_MS);
         if (boot_protocol_data_pending())
         {
             log_w("serial data received, staying in bootloader");
@@ -433,17 +438,17 @@ static bool boot_transition_pending(void)
 static void wait_key_release(void)
 {
     while (key_read(key2))
-        tim_delay_ms(10);
+        tim_delay_ms(BOOT_KEY_SAMPLE_MS);
 }
 
 /**
- * @brief 对Bootloader运行期间的复位按键做10ms消抖。
+ * @brief 对 Bootloader 运行期间的复位按键做一次采样周期消抖。
  */
 static bool key_pressed(void)
 {
     if (!key_read(key2))
         return false;
-    tim_delay_ms(10);
+    tim_delay_ms(BOOT_KEY_SAMPLE_MS);
     return key_read(key2);
 }
 

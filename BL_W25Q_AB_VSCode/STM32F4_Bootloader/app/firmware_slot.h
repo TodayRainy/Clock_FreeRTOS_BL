@@ -3,8 +3,8 @@
  * @brief 内部应用和两颗外部固件槽的校验与安装接口。
  */
 
-#ifndef __FIRMWARE_SLOT_H__
-#define __FIRMWARE_SLOT_H__
+#ifndef CLOCK_F407_FIRMWARE_SLOT_H
+#define CLOCK_F407_FIRMWARE_SLOT_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -83,4 +83,4 @@ bool firmware_slot_find_resume_offset(uint8_t slot, uint32_t data_length,
  */
 bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header);
 
-#endif /* __FIRMWARE_SLOT_H__ */
+#endif /* CLOCK_F407_FIRMWARE_SLOT_H */

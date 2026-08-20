@@ -3,11 +3,14 @@
  * @brief A/B启动控制记录在BL24C512中的双副本持久化实现。
  */
 
+#include "boot_state.h"
+
+#include <stdint.h>
 #include <string.h>
+
 #include "bl24c512.h"
 #include "crc32.h"
 #include "utils.h"
-#include "boot_state.h"
 
 /**
  * @brief 把旧版 BCR 保留区中的擦除值迁移为尚未启用防降级的版本 0。
@@ -59,23 +62,29 @@ void boot_state_default(boot_state_t *state)
 
 bool boot_state_load(boot_state_t *state)
 {
-    boot_state_t a;
-    boot_state_t b;
-    bool a_valid = bl24c512_read(BOOT_STATE_ADDR_A, (uint8_t *)&a, sizeof(a)) &&
-                   boot_state_record_valid(&a);
-    bool b_valid = bl24c512_read(BOOT_STATE_ADDR_B, (uint8_t *)&b, sizeof(b)) &&
-                   boot_state_record_valid(&b);
+    boot_state_t state_a;
+    boot_state_t state_b;
+    bool state_a_valid;
+    bool state_b_valid;
 
-    if (!a_valid && !b_valid)
+    state_a_valid =
+        bl24c512_read(BOOT_STATE_ADDR_A, (uint8_t *)&state_a, sizeof(state_a)) &&
+        boot_state_record_valid(&state_a);
+    state_b_valid =
+        bl24c512_read(BOOT_STATE_ADDR_B, (uint8_t *)&state_b, sizeof(state_b)) &&
+        boot_state_record_valid(&state_b);
+
+    if (!state_a_valid && !state_b_valid)
     {
         boot_state_default(state);
         return false;
     }
 
-    if (a_valid && (!b_valid || a.sequence >= b.sequence))
-        *state = a;
+    if (state_a_valid && (!state_b_valid || state_a.sequence >= state_b.sequence))
+        *state = state_a;
     else
-        *state = b;
+        *state = state_b;
+
     boot_state_normalize_security(state);
     return true;
 }
@@ -89,6 +98,8 @@ bool boot_state_save(boot_state_t *state)
     state->sequence++;
     state->record_crc32 = crc32((const uint8_t *)state,
                                 offset_of(boot_state_t, record_crc32));
+
+    /* 奇偶交替使本次写入和上一份有效记录位于不同 EEPROM 页。 */
     address = (state->sequence & 1u) ? BOOT_STATE_ADDR_B : BOOT_STATE_ADDR_A;
 
     if (!bl24c512_write(address, (const uint8_t *)state, sizeof(*state)) ||

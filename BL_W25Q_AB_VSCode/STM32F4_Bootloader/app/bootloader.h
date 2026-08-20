@@ -3,8 +3,8 @@
  * @brief Bootloader顶层入口。
  */
 
-#ifndef __BOOTLOADER_H__
-#define __BOOTLOADER_H__
+#ifndef CLOCK_F407_BOOTLOADER_H
+#define CLOCK_F407_BOOTLOADER_H
 
 /**
  * @brief 初始化升级相关硬件，执行A/B状态机并提供串口升级服务。
@@ -14,4 +14,4 @@
  */
 void bootloader_main(void);
 
-#endif /* __BOOTLOADER_H__ */
+#endif /* CLOCK_F407_BOOTLOADER_H */
