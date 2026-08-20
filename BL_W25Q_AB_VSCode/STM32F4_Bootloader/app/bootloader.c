@@ -8,6 +8,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <string.h>
 #include "stm32f4xx.h"
 #include "board.h"
 #include "boot_protocol.h"
@@ -224,6 +225,88 @@ static bool recover_without_state(boot_state_t *state)
 }
 
 /**
+ * @brief 在Normal阶段用与内部固件相同的外部Formal槽重建活动槽关系。
+ *
+ * 删除内部固件快照后，首次生产写入和BCR恢复都采用“先提供完整XBIN，再采用”
+ * 的方式。外部槽必须通过全部签名、GCM和正文校验，并与内部Header声明同一
+ * 发布内容；本函数只写BCR，不复制或重写任何固件数据。
+ */
+static bool adopt_matching_slot(boot_state_t *state, bool state_found,
+                                const magic_header_t *internal)
+{
+    boot_state_t adopted;
+    magic_header_t slot_header;
+    uint32_t previous_sequence;
+    uint32_t previous_minimum;
+    uint8_t slot;
+
+    /*
+     * EEPROM在外设刚初始化后的第一次读取偶尔可能失败。迁移采用发生得很少，
+     * 这里补读一次，避免已有高sequence记录被误判成全新设备后从1重新计数。
+     */
+    if (!state_found)
+        state_found = boot_state_load(state);
+
+    previous_sequence = state->sequence;
+    previous_minimum = state->minimum_security_version;
+    if (state_found &&
+        internal->security_version < state->minimum_security_version)
+        return false;
+
+    for (slot = 0; slot < BOOT_SLOT_COUNT; ++slot)
+    {
+        if (!firmware_slot_validate(slot, &slot_header) ||
+            slot_header.data_length != internal->data_length ||
+            slot_header.data_crc32 != internal->data_crc32 ||
+            slot_header.security_version != internal->security_version ||
+            slot_header.release_sequence != internal->release_sequence ||
+            slot_header.signing_key_id != internal->signing_key_id ||
+            memcmp(slot_header.image_sha256, internal->image_sha256,
+                   sizeof(internal->image_sha256)) != 0 ||
+            memcmp(slot_header.version, internal->version,
+                   sizeof(internal->version)) != 0)
+            continue;
+
+        log_w("adopting slot %u matching internal Formal image", slot);
+        boot_state_default(&adopted);
+        /* 双副本选择最新sequence；迁移时必须越过仍留在另一页的旧记录。 */
+        adopted.sequence = state_found ? previous_sequence : 0u;
+        adopted.active_slot = slot;
+        adopted.active_crc32 = internal->data_crc32;
+        adopted.minimum_security_version =
+            previous_minimum > internal->security_version ?
+            previous_minimum : internal->security_version;
+        if (!boot_state_save(&adopted))
+            return false;
+
+        /* 只有EEPROM提交成功，才让本次启动继续使用新状态。 */
+        *state = adopted;
+        return true;
+    }
+    return false;
+}
+
+/**
+ * @brief 判断当前BCR是否仍引用至少一份可识别的Formal Header。
+ *
+ * 这里只读取Header，不扫描正文。若存在引用，后续原状态机会完成严格的全量
+ * 校验和安装/回退；只有迁移遗留BCR的两个引用都已失效时才允许重新采用。
+ */
+static bool state_has_formal_reference(const boot_state_t *state)
+{
+    magic_header_t header;
+
+    if (state->active_slot < BOOT_SLOT_COUNT &&
+        firmware_slot_load_header(state->active_slot, &header) &&
+        header.data_crc32 == state->active_crc32)
+        return true;
+    return state->pending_slot < BOOT_SLOT_COUNT &&
+           firmware_slot_load_header(state->pending_slot, &header) &&
+           header.data_crc32 == state->pending_crc32 &&
+           header.security_version == state->pending_security_version;
+}
+
+/**
  * @brief 根据BCR和固件完整性准备一次应用启动。
  *
  * @return 内部应用已经过完整校验且允许立即跳转时返回 true；需要安装、回退、
@@ -235,11 +318,17 @@ static bool boot_prepare_application(void)
     magic_header_t internal_header;
     magic_header_t active_header;
     bool state_found = boot_state_load(&state);
+    bool internal_valid = firmware_internal_validate(&internal_header);
 
     log_i("state=%s phase=%u active=%u pending=%u attempts=%u seq=%u security=%u/%u",
           state_found ? "valid" : "default", state.phase, state.active_slot,
           state.pending_slot, state.attempts_left, state.sequence,
           state.minimum_security_version, state.pending_security_version);
+
+    /* 旧格式BCR无法引用Formal槽时，先完成一次性采用再解释旧事务阶段。 */
+    if (internal_valid && !state_has_formal_reference(&state) &&
+        adopt_matching_slot(&state, state_found, &internal_header))
+        return true;
 
     switch ((boot_phase_t)state.phase)
     {
@@ -256,10 +345,20 @@ static bool boot_prepare_application(void)
             break;
     }
 
-    if (firmware_internal_validate(&internal_header) &&
-        (state.active_slot == BOOT_SLOT_NONE ||
-         internal_header.data_crc32 == state.active_crc32))
-        return true;
+    if (internal_valid)
+    {
+        if (state.active_slot < BOOT_SLOT_COUNT &&
+            internal_header.data_crc32 == state.active_crc32)
+            return true;
+
+        /* BCR仍指向迁移前格式时，用已预置的同发布Formal槽完成一次性采用。 */
+        if (adopt_matching_slot(&state, state_found, &internal_header))
+            return true;
+
+        /* 允许工厂刚烧入的内部固件运行，但没有匹配槽时不会宣称A/B已就绪。 */
+        if (state.active_slot == BOOT_SLOT_NONE)
+            return true;
+    }
 
     if (state.active_slot < BOOT_SLOT_COUNT &&
         firmware_slot_validate(state.active_slot, &active_header) &&

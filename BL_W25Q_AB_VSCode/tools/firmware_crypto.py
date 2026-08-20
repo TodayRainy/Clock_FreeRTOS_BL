@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Common ECDSA-P256 helpers used by the firmware packer and validator.
+"""Common ECDSA-P256 helpers used by the XBIN Formal toolchain.
 
 The module deliberately delegates private-key operations to OpenSSL.  Python is
 only responsible for the fixed XBIN representation: a 64-byte ``r || s``
@@ -16,11 +16,13 @@ import tempfile
 from pathlib import Path
 
 
-HEADER_SIZE = 256
-SIGNATURE_OFFSET = 160
+HEADER_SIZE = 320
+ENCRYPTION_TAG_OFFSET = 108
+ENCRYPTION_TAG_SIZE = 16
+SIGNATURE_OFFSET = 188
 SIGNATURE_SIZE = 64
-HEADER_CRC_OFFSET = 252
-SIGNATURE_DOMAIN = b"ClockFW-XBIN-v2"
+HEADER_CRC_OFFSET = 316
+SIGNATURE_DOMAIN = b"ClockFW-XBIN-Formal-r1"
 P256_OID_DER = bytes.fromhex("06082A8648CE3D030107")
 ENCRYPTION_KEY_SIZE = 32
 
@@ -69,7 +71,7 @@ def public_key_id(point: bytes) -> int:
 
 def ensure_key_pair(openssl: Path, private_key: Path, public_key: Path,
                     create: bool) -> bytes:
-    """Create a DEV key when requested and verify that both PEM files match."""
+    """Create a P-256 key pair when requested and verify both PEM files match."""
     private_exists = private_key.is_file()
     public_exists = public_key.is_file()
 
@@ -136,7 +138,7 @@ def encryption_key_id(key: bytes) -> int:
 
 
 def ensure_encryption_key(path: Path, create: bool) -> bytes:
-    """Create a random local DEV key when requested, then validate its size."""
+    """Create a random AES-256 key when requested, then validate its size."""
     if create and not path.exists():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(secrets.token_bytes(ENCRYPTION_KEY_SIZE))
@@ -179,13 +181,34 @@ static const uint8_t firmware_encryption_key[32] =
 
 
 def canonical_header(header: bytes) -> bytes:
-    """Build the byte string hashed and signed for an XBIN v2 header."""
+    """Build the byte string hashed and signed for an XBIN Formal header."""
     if len(header) != HEADER_SIZE:
         raise ValueError("signature input must be one 256-byte header")
     normalized = bytearray(header)
     normalized[SIGNATURE_OFFSET:SIGNATURE_OFFSET + SIGNATURE_SIZE] = bytes(SIGNATURE_SIZE)
     normalized[HEADER_CRC_OFFSET:HEADER_SIZE] = bytes(4)
     return SIGNATURE_DOMAIN + normalized
+
+
+def encryption_aad(header: bytes) -> bytes:
+    """Return the canonical Formal Header authenticated as AES-GCM AAD.
+
+    GCM is calculated before the Tag and ECDSA signature exist.  Clearing those
+    fields and the final CRC makes the order deterministic without excluding
+    any ordinary metadata from authenticated encryption.
+    """
+    if len(header) != HEADER_SIZE:
+        raise ValueError("GCM AAD input must be one 320-byte Formal header")
+    normalized = bytearray(header)
+    normalized[ENCRYPTION_TAG_OFFSET:
+               ENCRYPTION_TAG_OFFSET + ENCRYPTION_TAG_SIZE] = bytes(
+                   ENCRYPTION_TAG_SIZE
+               )
+    normalized[SIGNATURE_OFFSET:SIGNATURE_OFFSET + SIGNATURE_SIZE] = bytes(
+        SIGNATURE_SIZE
+    )
+    normalized[HEADER_CRC_OFFSET:HEADER_SIZE] = bytes(4)
+    return bytes(normalized)
 
 
 def _read_der_length(data: bytes, offset: int) -> tuple[int, int]:

@@ -15,8 +15,8 @@ if(CMAKE_HOST_WIN32)
     set(_HOST_EXECUTABLE_SUFFIX ".exe")
 endif()
 
-# DEV构建在首次配置时生成仅供本机使用的签名密钥；密钥目录由Git忽略。
-# PROD构建必须显式提供外部密钥，避免测试密钥被误用于正式固件。
+# DEV/PROD仍用于区分维护接口权限，但两者都使用项目已确认的Formal密钥。
+# 本项目是私人学习仓库，密钥按项目要求纳入版本管理；不得复用于商业产品。
 set(BOOT_SECURITY_PROFILE "DEV" CACHE STRING "Bootloader security profile: DEV or PROD")
 set_property(CACHE BOOT_SECURITY_PROFILE PROPERTY STRINGS DEV PROD)
 string(TOUPPER "${BOOT_SECURITY_PROFILE}" BOOT_SECURITY_PROFILE)
@@ -26,16 +26,15 @@ if(NOT BOOT_SECURITY_PROFILE STREQUAL "DEV" AND
 endif()
 
 # 面向用户的版本字符串可以回退；这个独立计数只在修复安全问题时递增。
-set(FIRMWARE_SECURITY_VERSION "1" CACHE STRING
+set(FIRMWARE_SECURITY_VERSION "2" CACHE STRING
     "Monotonic firmware security version embedded in signed XBIN images")
 if(NOT FIRMWARE_SECURITY_VERSION MATCHES "^[0-9]+$" OR
    FIRMWARE_SECURITY_VERSION GREATER 4294967295)
     message(FATAL_ERROR "FIRMWARE_SECURITY_VERSION must be a uint32 decimal value")
 endif()
 
-# 普通发布序号只决定自动 OTA 的先后顺序。旧 XBIN 的保留字段为0，因此新方案
-# 从1开始即可完成一次平滑迁移；日常每发布一个不同固件都必须递增。
-set(FIRMWARE_RELEASE_SEQUENCE "2" CACHE STRING
+# 普通发布序号只决定自动OTA先后顺序。Formal首版承接现有release 3，从4开始。
+set(FIRMWARE_RELEASE_SEQUENCE "4" CACHE STRING
     "Monotonic release sequence used by automatic OTA")
 if(NOT FIRMWARE_RELEASE_SEQUENCE MATCHES "^[0-9]+$" OR
    FIRMWARE_RELEASE_SEQUENCE LESS 1 OR
@@ -44,7 +43,7 @@ if(NOT FIRMWARE_RELEASE_SEQUENCE MATCHES "^[0-9]+$" OR
 endif()
 
 # APP_VERSION 与 XBIN Header 共用同一字符串，串口日志和固件头不会漂移。
-set(WEATHERCLOCK_VERSION "v1.8.0-encrypted" CACHE STRING
+set(WEATHERCLOCK_VERSION "formal-1.0.0" CACHE STRING
     "WeatherClock display version stored in the signed XBIN header")
 if(WEATHERCLOCK_VERSION STREQUAL "" OR WEATHERCLOCK_VERSION MATCHES "[^ -~]")
     message(FATAL_ERROR "WEATHERCLOCK_VERSION must be non-empty printable ASCII")
@@ -58,41 +57,19 @@ find_program(FIRMWARE_OPENSSL_EXECUTABLE
     REQUIRED
 )
 
-set(_DEV_SIGNING_KEY "${CMAKE_SOURCE_DIR}/.keys/dev_firmware_private.pem")
-set(_DEV_VERIFY_KEY "${CMAKE_SOURCE_DIR}/.keys/dev_firmware_public.pem")
-set(_DEV_ENCRYPTION_KEY "${CMAKE_SOURCE_DIR}/.keys/dev_firmware_aes256.key")
+set(FIRMWARE_SIGNING_KEY
+    "${CMAKE_SOURCE_DIR}/keys/formal_firmware_private.pem"
+    CACHE FILEPATH "Formal P-256 private signing key" FORCE)
+set(FIRMWARE_VERIFY_KEY
+    "${CMAKE_SOURCE_DIR}/keys/formal_firmware_public.pem"
+    CACHE FILEPATH "Formal P-256 public verification key" FORCE)
+set(FIRMWARE_ENCRYPTION_KEY
+    "${CMAKE_SOURCE_DIR}/keys/formal_firmware_aes256.key"
+    CACHE FILEPATH "Formal raw 32-byte AES key" FORCE)
+
 if(BOOT_SECURITY_PROFILE STREQUAL "DEV")
-    set(FIRMWARE_SIGNING_KEY "${_DEV_SIGNING_KEY}"
-        CACHE FILEPATH "PEM private key used to sign firmware")
-    set(FIRMWARE_VERIFY_KEY "${_DEV_VERIFY_KEY}"
-        CACHE FILEPATH "PEM public key compiled into the Bootloader")
-    set(FIRMWARE_ENCRYPTION_KEY "${_DEV_ENCRYPTION_KEY}"
-        CACHE FILEPATH "Raw 32-byte AES key used for encrypted XBIN images")
-    set(_CREATE_DEV_KEY --create)
-    set(_CREATE_DEV_ENCRYPTION_KEY --create-encryption-key)
     set(FIRMWARE_PROFILE_DEFINITION FIRMWARE_BUILD_PROFILE_DEV=1)
 else()
-    set(FIRMWARE_SIGNING_KEY "" CACHE FILEPATH "External PROD firmware signing key")
-    set(FIRMWARE_VERIFY_KEY "" CACHE FILEPATH "External PROD firmware verification key")
-    set(FIRMWARE_ENCRYPTION_KEY "" CACHE FILEPATH "External PROD 32-byte AES key")
-    if(NOT FIRMWARE_SIGNING_KEY OR NOT FIRMWARE_VERIFY_KEY OR
-       NOT FIRMWARE_ENCRYPTION_KEY)
-        message(FATAL_ERROR
-            "PROD requires -DFIRMWARE_SIGNING_KEY=<private.pem> and "
-            "-DFIRMWARE_VERIFY_KEY=<public.pem> and "
-            "-DFIRMWARE_ENCRYPTION_KEY=<aes256.key>")
-    endif()
-    if("${FIRMWARE_SIGNING_KEY}" STREQUAL "${_DEV_SIGNING_KEY}" OR
-       "${FIRMWARE_VERIFY_KEY}" STREQUAL "${_DEV_VERIFY_KEY}")
-        message(FATAL_ERROR
-            "PROD refuses the auto-generated DEV key paths; provide an external key pair")
-    endif()
-    if("${FIRMWARE_ENCRYPTION_KEY}" STREQUAL "${_DEV_ENCRYPTION_KEY}")
-        message(FATAL_ERROR
-            "PROD refuses the auto-generated DEV encryption key path")
-    endif()
-    set(_CREATE_DEV_KEY)
-    set(_CREATE_DEV_ENCRYPTION_KEY)
     set(FIRMWARE_PROFILE_DEFINITION FIRMWARE_BUILD_PROFILE_PROD=1)
 endif()
 
@@ -108,8 +85,6 @@ execute_process(
             --output-header ${FIRMWARE_PUBLIC_KEY_HEADER}
             --encryption-key ${FIRMWARE_ENCRYPTION_KEY}
             --output-encryption-header ${FIRMWARE_ENCRYPTION_KEY_HEADER}
-            ${_CREATE_DEV_KEY}
-            ${_CREATE_DEV_ENCRYPTION_KEY}
     RESULT_VARIABLE _KEY_PREPARE_RESULT
     OUTPUT_VARIABLE _KEY_PREPARE_OUTPUT
     ERROR_VARIABLE _KEY_PREPARE_ERROR

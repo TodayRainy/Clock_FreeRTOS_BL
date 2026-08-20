@@ -1,138 +1,159 @@
-# XBIN v3 固件加密设计与使用说明
+# XBIN Formal 签名与加密设计
 
-## 1. 第一阶段目标
+本文说明当前主线唯一接受的固件容器。它不再兼容旧 XBIN，也不存在“明文模式”
+或额外 Encryption Descriptor。公开名称是 **Formal**，内部二进制修订号是 1。
 
-本阶段在现有签名、A/B、断点续传和OTA流程上增加固件保密能力，不修改内部
-Flash布局，也不启用RDP、WRP或其他不可逆Option Bytes。J-Link/SWD救援继续
-保留，这是当前个人学习板“不变砖”要求的最高优先级。
+## 1. 三种校验分别解决什么问题
 
-加密和签名解决的是两个不同问题：
+Formal 同时使用 CRC32、ECDSA-P256 和 AES-256-GCM，但三者职责不同：
 
-- AES-256-GCM让公开存放在COS、串口传输或外部W25Q中的升级正文不再直接暴露
-  程序机器码；
-- ECDSA-P256继续决定“这个版本是否由项目所有者授权”。知道AES密钥不能替代
-  签名私钥发布任意固件；
-- CRC32用于发现普通传输错误，SHA-256用于核对解密后的完整内容，它们都不替代
-  AES-GCM认证或ECDSA签名。
+- CRC32：快速发现串口、Flash 或文件损坏，不提供安全性；
+- ECDSA-P256：证明 Header 是由持有私钥的人签发，攻击者不能随意替换版本、
+  地址、摘要、Nonce 或 Tag；
+- AES-256-GCM：让外部 XBIN 正文不可直接阅读，并在解密时认证密文与 Header。
 
-## 2. XBIN v3 布局
+签名解决“这个固件是不是我们发布的”，加密解决“别人能不能直接看到固件”。
+只加密不签名仍可能接受攻击者构造的数据；只签名不加密则文件内容仍可反汇编。
 
-```text
-0x0000..0x00FF  原有256字节签名Header（格式仍为v2）
-0x0100..0x013F  64字节ENC3加密描述
-0x0140..0x0FFF  零填充
-0x1000..末尾    与应用BIN等长的AES-256-GCM密文
-```
-
-保留原有签名Header的好处是版本号、发布序号、防降级、安全版本和ECDSA签名契约
-无需复制一份。`ENC3`描述包含算法、AES密钥ID、12字节随机Nonce、16字节GCM Tag、
-保留区和描述CRC32。
-
-GCM附加认证数据（AAD）是“完整256字节签名Header + ENC3前32字节”。因此修改
-版本、摘要、算法、密钥ID或Nonce都会使Tag失效；修改密文或Tag本身也会在认证
-阶段被拒绝。每次打包使用系统密码学随机源生成新Nonce，相同应用重复打包也会
-得到不同密文。
-
-## 3. 设备端安装顺序
-
-外部W25Q槽保存完整的加密XBIN，STM32内部应用区仍保存可直接执行的明文。安装
-流程为：
-
-1. 校验签名Header、ENC3结构和对应密钥ID；
-2. 顺序读取外部密文，流式解密并验证GCM Tag，同时计算明文CRC32、SHA-256并
-   检查向量表；
-3. 只有完整候选第一次验证通过，才擦除内部应用Header和应用区；
-4. 第二次流式解密并把明文写入内部Flash；
-5. 再次验证GCM Tag、内部明文摘要和向量表；
-6. 最后写入原有256字节有效Header，完成原子提交。
-
-第二次认证或写入中途掉电时，内部Header仍无效。Bootloader下次启动会从已经
-验证过的活动外部槽恢复，不会把半写入的内部应用当作有效程序。外部槽快照仍是
-明文签名v2，这是为了让已确认的运行镜像成为简单可靠的回退源。
-
-## 4. OTA与USART3的行为
-
-WeatherClock应用和PC上位机不持有AES密钥，也不自行解密固件：
-
-- OTA用320字节Range请求读取签名Header和ENC3描述；下载时只处理密文字节；
-- OTA完成后核对Manifest中的完整XBIN SHA-256，明文摘要与GCM Tag延后交给
-  Bootloader；
-- USART3上位机校验Header/ENC3结构并按原协议上传密文；断点续传的4 KiB分块CRC
-  直接覆盖密文，不影响恢复算法；
-- 两条路径都先写正文和Header区填充，最后提交包含ENC3的前320字节。有效签名
-  Header在最后写入，半包不会成为候选。
-
-明文签名v2仍被新Bootloader接受，便于迁移和恢复；生成脚本的`--no-encrypt`
-选项可显式产生这种过渡包。旧Bootloader遇到加密v3时会把密文当作正文，其
-CRC32/SHA-256必然不匹配，因此会安全拒绝，而不是错误安装。
-
-## 5. 密钥与构建
-
-DEV首次配置会在Git忽略的`.keys/`目录生成：
+## 2. 文件布局
 
 ```text
-.keys/dev_firmware_private.pem
-.keys/dev_firmware_public.pem
-.keys/dev_firmware_aes256.key
+0x0000 ┌──────────────────────────┐
+       │ Formal Header，320 字节  │
+0x0140 ├──────────────────────────┤
+       │ 保留填充到 4 KiB         │
+0x1000 ├──────────────────────────┤
+       │ AES-256-GCM 密文         │
+       └──────────────────────────┘
 ```
 
-AES文件必须恰好32字节。构建只把AES密钥编入Bootloader，WeatherClock、
-SerialUpgrader、Manifest和XBIN中都不包含明文密钥。常规验证命令为：
+外部 W25Q 槽保存以上完整 XBIN。STM32 内部 Flash 使用相同 Header，但
+`0x08010000` 后保存已经通过 GCM 认证的明文应用。因此复位后无需边运行边解密，
+应用执行速度与普通内部 Flash 程序相同。
+
+320 字节 Header 的固定偏移如下：
+
+| 偏移 | 长度 | 字段 |
+|---:|---:|---|
+| 0 | 4 | magic：小端 `FORM` |
+| 4 | 4 | `format_revision=1` |
+| 8 | 4 | `header_size=320` |
+| 12 | 4 | 固件类型 |
+| 16 | 4 | 正文偏移 `0x1000` |
+| 20 | 4 | 内部地址 `0x08010000` |
+| 24 | 4 | 明文长度 |
+| 28 | 4 | 明文 CRC32 |
+| 32 | 4 | `security_version` |
+| 36 | 4 | `release_sequence` |
+| 40 | 12 | SHA、签名、加密算法编号 |
+| 52 | 8 | 签名 Key ID、AES Key ID |
+| 60 | 4 | 保留，必须为 0 |
+| 64 | 32 | 明文 SHA-256 |
+| 96 | 12 | GCM Nonce |
+| 108 | 16 | GCM Tag |
+| 124 | 64 | ASCII 版本字符串 |
+| 188 | 64 | ECDSA `r || s` 签名 |
+| 252 | 64 | 保留，必须为 0 |
+| 316 | 4 | Header CRC32 |
+
+`shared/firmware_image_format.h` 是 C 端唯一权威定义；Python 打包器和 C# 上位机
+使用相同偏移，C 编译期 `_Static_assert` 会阻止结构体无意漂移。
+
+## 3. 打包顺序
+
+`WeatherClock/scripts/gen_magic_header.py` 按固定顺序生成 Formal 包：
+
+1. 读取明文应用，计算 CRC32 和 SHA-256；
+2. 填写版本、地址、算法、Key ID 和随机 96 位 Nonce；
+3. 将 Tag、签名和 Header CRC 清零，把整份 320 字节 Header 作为 GCM AAD；
+4. 用 AES-256-GCM 加密正文并写入 16 字节 Tag；
+5. 将签名和 Header CRC 清零，使用域 `ClockFW-XBIN-Formal-r1` 对 Header 签名；
+6. 把 DER 签名规范化为固定 64 字节 `r || s`；
+7. 对前 316 字节计算 Header CRC32；
+8. 输出 Header、填充和密文，同时另存可烧入 `0x0800C000` 的 Header 文件。
+
+GCM AAD 绑定除 Tag、签名、Header CRC 外的全部 Header；ECDSA 又把最终 Tag
+绑定进签名。这样不会形成 Tag 与签名互相依赖的循环，同时所有重要元数据都受保护。
+
+## 4. Bootloader 验证和安装
+
+外部槽的验证顺序是：
+
+1. 检查 magic、revision、长度、地址、算法和保留字段；
+2. 校验 Header CRC32；
+3. 检查编译进 Bootloader 的签名 Key ID 与 AES Key ID；
+4. ECDSA-P256 验签；
+5. 流式执行 AES-GCM 解密和 Tag 认证；
+6. 同一遍数据流计算明文 CRC32 与 SHA-256；
+7. 检查 MSP、Thumb Reset_Handler 和应用地址范围；
+8. 全部通过后才把明文写入 STM32 内部应用区；
+9. 最后写 320 字节 Header，并再次从内部 Flash 复核。
+
+安装采用 4 KiB 缓冲，不需要在 RAM 中保存整个固件。断电发生在内部 Flash 擦写
+期间时，外部活动槽和候选槽仍保持完整；下次复位由 BCR 的 `InstallPending` 或
+`RollbackPending` 继续安装或恢复。
+
+内部应用启动前仍会检查 Header 签名、明文 CRC32、SHA-256 和向量表。GCM Tag
+不需要再次对内部明文运行；它已经在从外部槽安装的信任边界上完成认证。
+
+## 5. 密钥
+
+当前项目密钥位于：
+
+- `keys/formal_firmware_private.pem`；
+- `keys/formal_firmware_public.pem`；
+- `keys/formal_firmware_aes256.key`。
+
+构建时 Python 生成 `firmware_public_key.h` 和 `firmware_encryption_key.h`，后两者
+编入 Bootloader。DEV 和 PROD 使用同一套 Formal 密钥；两种 profile 的差异是
+维护命令权限，不是密码算法或容器格式。
+
+用户明确允许把密钥提交到私人代码仓库。这适合个人学习和可重复构建，但不等于
+工业密钥管理：商业系统应把签名私钥放在离线签名机或 HSM，把设备解密密钥放进
+安全存储，并设计独立的密钥轮换和吊销机制。
+
+当前只内置一个签名公钥和一个 AES 密钥。若要轮换，必须先发布一个同时认识新旧
+Key ID 的过渡 Bootloader，再发布由新密钥生成的固件。直接替换仓库密钥并重编
+上位机无法让已经部署的旧 Bootloader 自动认识新密钥。
+
+## 6. 能保护和不能保护的范围
+
+能够保护：
+
+- COS 或其他文件服务器上的 XBIN 正文；
+- USART3 传输中被被动抓取的固件；
+- 拆下 W25Q 后直接读取的槽内容；
+- 未持有 ECDSA 私钥的人伪造可安装固件；
+- 修改版本、安全级别、地址、摘要、Nonce、Tag 或密文。
+
+不能充分保护：
+
+- RDP0 且开放 SWD 时的物理攻击者；
+- 从 Bootloader 内部 Flash 提取 AES 密钥；
+- 设备已经解密并写入 `0x08010000` 后读取内部应用；
+- 私钥或 AES 密钥本身泄露；
+- 应用代码自身的逻辑漏洞和运行时内存攻击。
+
+本项目的红线是可救援，因此没有开启 RDP、WRP 或关闭 SWD。加密目标是明显提高
+文件分发、串口和外部 Flash 的复制门槛，而不是宣称具备防拆安全芯片的能力。
+
+## 7. 与旧格式的边界
+
+Formal Bootloader 不接受旧 Header、明文包或额外加密描述块；上位机也只解析
+Formal。旧协议中的内部 Flash 擦除/编程命令、外部快照命令、旧激活参数和兼容
+回退均已删除。
+
+旧设备迁移必须先准备一份完整 Formal 外部槽，再写 Formal 内部 Header、应用和
+Bootloader。迁移代码只会采用与内部固件在长度、CRC、SHA、版本、release、
+security 和 Key ID 上完全匹配的有效外部槽；找不到时留在 Bootloader 等待救援。
+
+## 8. 验证命令
 
 ```powershell
-cmake --preset release
-cmake --build --preset validate-release
-cmake --build --preset security-test-release
-dotnet build .\SerialUpgrader\SerialUpgrader.csproj -c Release
+cmake --build build/release --target validate_images --parallel 1
+cmake --build build/release --target test_firmware_security --parallel 1
 ```
 
-PROD构建要求三项外部路径：
-
-```powershell
-$env:CLOCK_FW_SIGNING_KEY='D:\secure\clock_private.pem'
-$env:CLOCK_FW_VERIFY_KEY='D:\secure\clock_public.pem'
-$env:CLOCK_FW_ENCRYPTION_KEY='D:\secure\clock_aes256.key'
-cmake --preset release-prod
-cmake --build --preset validate-release-prod
-```
-
-私钥和AES密钥都需要离线备份。丢失签名私钥将无法签发新版本；丢失AES密钥将
-无法为现有Bootloader生成可解密的v3包。当前实现只内置一把AES密钥，轮换密钥
-属于后续阶段，不在这次简单实现中预埋复杂状态机。
-
-## 6. 安全边界
-
-当前方案主要防止别人从公开OTA文件、串口抓包或拆下外部Flash后直接获得固件。
-为了保留J-Link救援，MCU仍是RDP Level 0，内部Flash也保存运行所需明文。因此
-能够接触板卡并通过SWD读取芯片的人，仍可能提取Bootloader中的AES密钥和内部
-应用。这是本阶段主动接受的取舍，不应把它描述成物理防拆方案。
-
-如果以后确实需要抵抗物理提取，应单独规划RDP、Bootloader写保护、安全密钥
-注入和量产救援流程；这些设置可能影响甚至永久关闭当前救援能力，不能作为本次
-加密开发的顺手改动。
-
-## 7. 安全部署顺序
-
-板上当前旧Bootloader不认识ENC3，所以迁移必须按以下顺序：
-
-1. 确认J-Link连接，保留并校验当前512 KiB整片救援镜像；
-2. 只烧录并verify新的`v3.5.0-encrypted` Bootloader前48 KiB；
-3. 复位确认它仍能验证并启动当前明文签名v2应用；
-4. 再通过USART3或OTA把`v1.8.0-encrypted / release 2`写入非活动槽；
-5. 由Bootloader安装、进入Trial并等待应用确认；
-6. 最后读取BCR、两槽状态和运行日志，必要时再生成新的整片救援镜像。
-
-在步骤2之前不能发布指向v3密文的公网Manifest。本项目不会修改Option Bytes；
-任何阶段失败都可用现有J-Link恢复脚本重写`0x08000000`起的已知良好镜像。
-
-## 8. 已覆盖的自动化测试
-
-当前测试会验证：正常加密包可还原为原始BIN；Bootloader同源流式AES-GCM实现
-接受正确Tag并拒绝错误Tag；密文、Nonce、密钥ID、Tag、签名、元数据和发布序号
-任一被修改均拒绝；旧Bootloader语义下密文CRC不可能被当作有效明文；断点续传
-继续按密文块定位。
-
-2026-08-20实板已完成两条路径：USART3安装`v1.8.0-encrypted / release 2`，随后
-COS OTA安装`v1.8.1-encrypted-ota-test / release 3`。最终BCR为Normal、active A，
-A/B槽均完整有效；详细日志、耗时和救援镜像见`RELEASE_NOTES_v1.8.0.md`与
-`SAFETY_BASELINE.md`。
+负向测试会分别破坏密文、CRC、SHA、版本、安全版本、发布序号、签名、Nonce、
+Key ID 和 Tag，并确认全部被拒绝。主机测试还会直接编译 Bootloader 使用的
+micro-ecc、SHA-256 和 Mbed TLS GCM 源码，避免只验证 Python/OpenSSL 一侧。

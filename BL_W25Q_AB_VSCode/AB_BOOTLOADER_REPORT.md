@@ -1,5 +1,8 @@
 # STM32 天气时钟外部 A/B Bootloader 完工报告
 
+> 历史报告：本文记录Formal收口前的A/B演进过程，其中旧XBIN、快照和兼容命令
+> 已从当前代码删除。当前架构与操作以`README.md`和`CODE_GUIDE.md`为准。
+
 完成日期：2026-08-18  
 目标硬件：STM32F407VET6、两颗 W25Q128、BL24C512、J-Link、USART3 USB-TTL  
 当前项目目录：`BL_W25Q_AB_VSCode`（由 `BL_W25Q_AB` 迁移并继续演进）  

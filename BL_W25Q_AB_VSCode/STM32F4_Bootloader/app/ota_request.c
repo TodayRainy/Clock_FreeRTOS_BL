@@ -90,7 +90,7 @@ void ota_request_process(void)
 
     xbin_size = header.data_offset + header.data_length;
     if (request.xbin_size != xbin_size ||
-        request.header_crc32 != header.this_crc32 ||
+        request.header_crc32 != header.header_crc32 ||
         request.payload_crc32 != header.data_crc32 ||
         request.security_version != header.security_version ||
         memcmp(request.image_sha256, header.image_sha256,

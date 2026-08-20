@@ -1,5 +1,8 @@
 # VS Code + CMake + GCC + J-Link/GDB 迁移报告
 
+> 工具链迁移仍然有效；涉及旧固件版本、Header或快照的示例属于历史记录。
+> 当前构建参数和产物名称以`README.md`为准。
+
 完成日期：2026-08-18  
 迁移项目：`BL_W25Q_AB_VSCode`  
 来源项目：`BL_W25Q_AB`（保留原状）

@@ -1,5 +1,8 @@
 # A/B Bootloader 安全基线
 
+> 本文按时间保留各阶段实板基线。最下方“Formal 1.0.0”是当前有效基线；
+> 之前的 v2/v3、明文兼容和快照描述仅用于追溯，不代表当前代码仍支持这些功能。
+
 本目录从 `BL` 的当前已验证状态复制，原目录不参与后续双区开发。
 
 ## 设备备份
@@ -284,3 +287,47 @@ SHA-256为`D19567D780278413A892664B26EE962962D8F4337CD97BF82C76D35F473726F8`。
 - `tools/jlink/backup_encrypted_v3_5_final.jlink`；
 - `tools/jlink/restore_encrypted_v3_5_final.jlink`；
 - `tools/jlink/verify_encrypted_v3_5_final.jlink`。
+
+## Formal 1.0.0 单格式救援基线
+
+- Bootloader：`formal-1.0.0-dev`；
+- XBIN：Formal revision 1，320字节Header，ECDSA-P256 + AES-256-GCM均为必选；
+- WeatherClock：`formal-1.0.0`；
+- release sequence：4；security version：2；
+- 签名Key ID：`0xCA9EEE70`；AES Key ID：`0x9B5260DC`；
+- Bootloader：34,800字节/48 KiB；
+- WeatherClock：158,024字节/448 KiB；CRC32 `0x6842D847`；
+- 最终BCR：`Normal / active=B / pending=none / attempts=0 / sequence=320`；
+- Slot A、Slot B和内部Flash均为`formal-1.0.0`并通过完整实板检查。
+
+迁移前已对上一版512 KiB镜像执行整片`verifybin`。正式迁移先通过旧Bootloader把
+Formal XBIN放入非活动Slot B，再分别写入Formal Bootloader、320字节内部Header
+和明文应用。实板发现旧SEGGER Commander无法可靠打开中文固件路径；改用纯ASCII
+临时路径重新烧录并再次逐字节校验后，Bootloader、Header和应用全部一致。
+
+旧BCR为`RollbackPending / seq=311`。Formal采用逻辑验证Slot B和内部固件完全
+匹配后，重建为`Normal / active=B / seq=312`并把安全版本下限提升到2。随后完成：
+
+1. USART3 2 Mbaud完整重写Slot A，W25编程2.11秒、总提交2.72秒；
+2. `InstallPending → Trial → Normal`和应用健康确认，切换到Slot A；
+3. 对已有同镜像的Slot B做断点扫描，复用全部158,024字节，总提交0.81秒；
+4. 再次完成Trial并切回Slot B，最终sequence为320；
+5. 公网COS按XBIN先上传、Manifest后发布的顺序切到Formal release 4；
+6. J-Link始终可连接，VTref约3.29 V，未修改RDP、WRP或其他Option Bytes。
+
+最终512 KiB内部Flash救援镜像为：
+
+`../.device-backups/stm32f407_formal_1_0_0_final_20260820.bin`
+
+文件长度524,288字节，SHA-256为
+`FBCB8245952C87C6333FC71CAA8A5C5DB7A9987A2573788C3855707B43BA94DF`。
+保存后已立即对整片执行`verifybin`，当时PC位于WeatherClock应用地址
+`0x08015262`。对应脚本为：
+
+- `tools/jlink/backup_formal_1_0_0_final.jlink`；
+- `tools/jlink/restore_formal_1_0_0_final.jlink`；
+- `tools/jlink/verify_formal_1_0_0_final.jlink`。
+
+此外仍保留迁移前救援镜像
+`../.device-backups/stm32f407_encrypted_v3_5_final_20260820.bin`。若Formal工程或
+外部槽同时损坏，可先用J-Link恢复任一已验证整片镜像，再通过USART3重建外部槽。

@@ -3,7 +3,7 @@
  * @brief 在PC上直接运行Bootloader同一份SHA-256和micro-ecc验签代码。
  *
  * 该测试不模拟STM32外设，只验证最重要的密码学边界：C实现必须接受构建工具
- * 生成的XBIN，并拒绝摘要、Header或签名发生变化的镜像。
+ * 生成的XBIN Formal，并拒绝摘要、Header或签名发生变化的镜像。
  */
 
 #include <stdio.h>

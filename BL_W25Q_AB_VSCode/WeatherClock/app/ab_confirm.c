@@ -13,6 +13,7 @@
 #include "bl24c512.h"
 #include "ab_confirm.h"
 #include "health_monitor.h"
+#include "magic_header.h"
 #include "../../shared/ab_boot_contract.h"
 #include "../../shared/firmware_image_format.h"
 #include "../../shared/firmware_security_policy.h"
@@ -96,27 +97,14 @@ static bool save_state(boot_state_t *state)
  * @brief 确认当前运行固件就是BCR中记录的pending固件。
  *
  * Bootloader在跳转前已经完成SHA-256、ECDSA签名和CRC32验证。应用端只复核
- * 带CRC保护的v2 Header及其中的固件CRC标识，避免再次扫描整个内部Flash。
+ * 带CRC保护的Formal Header及其中的固件CRC标识，避免再次扫描整个内部Flash。
  */
 static bool running_firmware_matches(uint32_t expected_crc32,
                                      uint32_t expected_security_version)
 {
     const magic_header_t *header = (const magic_header_t *)MAGIC_HEADER_ADDR;
 
-    if (header->magic != MAGIC_HEADER_MAGIC ||
-        header->format_version != MAGIC_HEADER_FORMAT_V2 ||
-        header->header_size != MAGIC_HEADER_SIZE ||
-        header->hash_algorithm != MAGIC_HASH_SHA256 ||
-        header->signature_algorithm != MAGIC_SIGNATURE_ECDSA_P256_SHA256 ||
-        header->data_type != MAGIC_HEADER_TYPE_APP ||
-        header->data_offset != MAGIC_HEADER_AREA_SIZE ||
-        header->data_address != MAGIC_DATA_ADDRESS ||
-        header->data_length == 0 || header->data_length > MAGIC_DATA_MAX_SIZE ||
-        header->this_address != MAGIC_HEADER_ADDR)
-        return false;
-
-    if (calculate_crc32((const uint8_t *)header,
-                        offsetof(magic_header_t, this_crc32)) != header->this_crc32)
+    if (!magic_header_validate_data(header))
         return false;
     return header->data_crc32 == expected_crc32 &&
            header->security_version == expected_security_version;

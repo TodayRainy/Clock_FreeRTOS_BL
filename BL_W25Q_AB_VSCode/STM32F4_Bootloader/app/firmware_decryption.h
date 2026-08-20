@@ -1,6 +1,6 @@
 /**
  * @file firmware_decryption.h
- * @brief XBIN v3 AES-256-GCM 流式解密接口。
+ * @brief XBIN Formal AES-256-GCM流式解密接口。
  */
 
 #ifndef __FIRMWARE_DECRYPTION_H__
@@ -10,7 +10,6 @@
 #include <stddef.h>
 #include <stdint.h>
 #include "mbedtls/gcm.h"
-#include "firmware_encryption_format.h"
 #include "firmware_image_format.h"
 
 typedef struct
@@ -19,15 +18,13 @@ typedef struct
 } firmware_decryption_t;
 
 /**
- * @brief 使用 Bootloader 内置密钥开始解密一个 XBIN v3 payload。
+ * @brief 使用Bootloader内置密钥开始解密一个XBIN Formal正文。
  * @param[out] context 解密上下文。
- * @param[in] header 已通过 ECDSA 验证的内层签名 Header。
- * @param[in] encryption 已通过结构校验的 ENC3 描述。
+ * @param[in] header 已通过结构和ECDSA验证的Formal Header。
  * @return 密钥 ID 和 GCM 初始化均正确时返回 true。
  */
 bool firmware_decryption_begin(firmware_decryption_t *context,
-                               const magic_header_t *header,
-                               const xbin_encryption_header_t *encryption);
+                               const magic_header_t *header);
 
 /**
  * @brief 原地解密一段连续密文。
@@ -45,14 +42,14 @@ bool firmware_decryption_update(firmware_decryption_t *context,
 /**
  * @brief 结束解密并验证完整 16 字节 GCM Tag。
  * @param[in,out] context 已开始的解密上下文；返回前会清除内部密钥状态。
- * @param[in] encryption 对应的 ENC3 描述。
+ * @param[in] header 带有预期GCM Tag的Formal Header。
  * @param[out] output 接收实现可能缓存的最后不足 16 字节明文。
  * @param[in] output_size output 的容量。
  * @param[out] output_length 最后产生的明文字节数。
  * @return Tag 完全一致时返回 true。
  */
 bool firmware_decryption_finish(firmware_decryption_t *context,
-                                const xbin_encryption_header_t *encryption,
+                                const magic_header_t *header,
                                 uint8_t *output, size_t output_size,
                                 size_t *output_length);
 

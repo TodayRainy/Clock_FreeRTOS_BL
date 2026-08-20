@@ -1,6 +1,6 @@
 /**
  * @file firmware_slot.h
- * @brief 内部应用和两颗外部固件槽的校验、安装及快照接口。
+ * @brief 内部应用和两颗外部固件槽的校验与安装接口。
  */
 
 #ifndef __FIRMWARE_SLOT_H__
@@ -82,15 +82,5 @@ bool firmware_slot_find_resume_offset(uint8_t slot, uint32_t data_length,
  * @return 安装并校验成功时返回 true。
  */
 bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header);
-
-/**
- * @brief 把当前有效的内部固件快照到指定外部槽。
- *
- * 先写应用数据，最后写有效Header，因此中断不会留下可被误识别的半成品槽。
- *
- * @param[in] slot 快照目标槽。
- * @return 外部快照通过完整校验时返回 true。
- */
-bool firmware_slot_snapshot_internal(uint8_t slot);
 
 #endif /* __FIRMWARE_SLOT_H__ */

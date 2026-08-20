@@ -1,5 +1,8 @@
 # Bootloader 传输与恢复流程优化报告
 
+> 历史性能报告：v2.x数据用于解释优化来源。当前Formal协议不再保留旧激活参数
+> 或兼容回退，最终实测见`RESUMABLE_UPGRADE_GUIDE.md`。
+
 ## v2.1.0 快速状态与SPI读取DMA补充
 
 本轮没有改变XBIN格式、A/B提交顺序或2 Mbps信用ACK传输方式，优化的是固件

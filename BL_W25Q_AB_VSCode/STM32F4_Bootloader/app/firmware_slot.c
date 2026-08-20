@@ -1,6 +1,6 @@
 /**
  * @file firmware_slot.c
- * @brief 内部固件和外部A/B槽的校验、安装与快照实现。
+ * @brief 内部固件和外部A/B槽的校验与安装实现。
  */
 
 #include <string.h>
@@ -11,7 +11,6 @@
 #include "watchdog.h"
 #include "firmware_auth.h"
 #include "firmware_decryption.h"
-#include "firmware_encryption_format.h"
 #include "magic_header.h"
 #include "firmware_slot.h"
 
@@ -19,13 +18,6 @@
 #define INSTALL_BUFFER_SIZE (INSTALL_CHUNK_SIZE + 16u)
 
 static uint8_t install_buffer[INSTALL_BUFFER_SIZE];
-
-typedef enum
-{
-    SLOT_DATA_PLAINTEXT,
-    SLOT_DATA_ENCRYPTED,
-    SLOT_DATA_INVALID,
-} slot_data_encoding_t;
 
 #define SRAM_START     0x20000000u
 #define SRAM_END       0x20020000u
@@ -44,19 +36,6 @@ static uint32_t read_u32_le(const uint8_t *data)
            ((uint32_t)data[1] << 8) |
            ((uint32_t)data[2] << 16) |
            ((uint32_t)data[3] << 24);
-}
-
-/** @brief 读取外部槽的可选加密描述，并确认它使用本 Bootloader 的密钥。 */
-static slot_data_encoding_t slot_data_encoding(
-    uint8_t slot, xbin_encryption_header_t *encryption)
-{
-    w25q_read((w25q_chip_t)slot, XBIN_ENCRYPTION_HEADER_OFFSET,
-              (uint8_t *)encryption, sizeof(*encryption));
-    if (encryption->magic != XBIN_ENCRYPTION_MAGIC)
-        return SLOT_DATA_PLAINTEXT;
-    if (!magic_encryption_header_validate(encryption))
-        return SLOT_DATA_INVALID;
-    return SLOT_DATA_ENCRYPTED;
 }
 
 /**
@@ -143,8 +122,6 @@ bool firmware_slot_load_header(uint8_t slot, magic_header_t *header)
  */
 bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
 {
-    xbin_encryption_header_t encryption;
-    slot_data_encoding_t encoding;
     firmware_decryption_t decrypt_context;
     uint32_t address;
     uint32_t remaining;
@@ -161,15 +138,9 @@ bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
     if (slot >= W25Q_CHIP_COUNT)
         return false;
 
-    encoding = slot_data_encoding(slot, &encryption);
-    if (encoding == SLOT_DATA_INVALID)
+    if (!firmware_decryption_begin(&decrypt_context, header))
         return false;
-    if (encoding == SLOT_DATA_ENCRYPTED)
-    {
-        if (!firmware_decryption_begin(&decrypt_context, header, &encryption))
-            return false;
-        decrypt_active = true;
-    }
+    decrypt_active = true;
 
     address = header->data_offset;
     remaining = header->data_length;
@@ -181,17 +152,10 @@ bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
 
         chunk = remaining > INSTALL_CHUNK_SIZE ? INSTALL_CHUNK_SIZE : remaining;
         w25q_read((w25q_chip_t)slot, address, install_buffer, chunk);
-        if (encoding == SLOT_DATA_ENCRYPTED)
-        {
-            if (!firmware_decryption_update(&decrypt_context, install_buffer,
-                                            chunk, sizeof(install_buffer),
-                                            &output_length))
-                goto out;
-        }
-        else
-        {
-            output_length = chunk;
-        }
+        if (!firmware_decryption_update(&decrypt_context, install_buffer,
+                                        chunk, sizeof(install_buffer),
+                                        &output_length))
+            goto out;
 
         if (vector_length < sizeof(vectors))
         {
@@ -209,11 +173,10 @@ bool firmware_slot_verify_data(uint8_t slot, const magic_header_t *header)
         remaining -= chunk;
     }
 
-    if (encoding == SLOT_DATA_ENCRYPTED)
     {
         size_t output_length;
 
-        if (!firmware_decryption_finish(&decrypt_context, &encryption,
+        if (!firmware_decryption_finish(&decrypt_context, header,
                                         install_buffer, sizeof(install_buffer),
                                         &output_length))
         {
@@ -297,8 +260,6 @@ bool firmware_slot_find_resume_offset(uint8_t slot, uint32_t data_length,
  */
 bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
 {
-    xbin_encryption_header_t encryption;
-    slot_data_encoding_t encoding;
     firmware_decryption_t decrypt_context;
     magic_header_t header;
     uint32_t source;
@@ -318,15 +279,9 @@ bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
      */
     header = *verified_header;
 
-    encoding = slot_data_encoding(slot, &encryption);
-    if (encoding == SLOT_DATA_INVALID)
+    if (!firmware_decryption_begin(&decrypt_context, &header))
         return false;
-    if (encoding == SLOT_DATA_ENCRYPTED)
-    {
-        if (!firmware_decryption_begin(&decrypt_context, &header, &encryption))
-            return false;
-        decrypt_active = true;
-    }
+    decrypt_active = true;
 
     stm32_flash_unlock();
 
@@ -344,17 +299,10 @@ bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
 
         chunk = remaining > INSTALL_CHUNK_SIZE ? INSTALL_CHUNK_SIZE : remaining;
         w25q_read((w25q_chip_t)slot, source, install_buffer, chunk);
-        if (encoding == SLOT_DATA_ENCRYPTED)
-        {
-            if (!firmware_decryption_update(&decrypt_context, install_buffer,
-                                            chunk, sizeof(install_buffer),
-                                            &output_length))
-                goto out;
-        }
-        else
-        {
-            output_length = chunk;
-        }
+        if (!firmware_decryption_update(&decrypt_context, install_buffer,
+                                        chunk, sizeof(install_buffer),
+                                        &output_length))
+            goto out;
         if (output_length != 0u &&
             !stm32_flash_program(destination, install_buffer,
                                  (uint32_t)output_length))
@@ -366,11 +314,10 @@ bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
         remaining -= chunk;
     }
 
-    if (encoding == SLOT_DATA_ENCRYPTED)
     {
         size_t output_length;
 
-        if (!firmware_decryption_finish(&decrypt_context, &encryption,
+        if (!firmware_decryption_finish(&decrypt_context, &header,
                                         install_buffer, sizeof(install_buffer),
                                         &output_length))
         {
@@ -388,7 +335,7 @@ bool firmware_slot_install(uint8_t slot, const magic_header_t *verified_header)
     if (written != header.data_length || !internal_data_valid(&header))
         goto out;
 
-    /* 数据确认无误后，最后写入256字节有效头，完成一次原子式提交。 */
+    /* 数据确认无误后，最后写入320字节Formal Header，完成原子式提交。 */
     if (!stm32_flash_program(MAGIC_HEADER_ADDR, (const uint8_t *)&header, sizeof(header)))
         goto out;
 
@@ -402,46 +349,4 @@ out:
         firmware_decryption_abort(&decrypt_context);
     stm32_flash_lock();
     return ok;
-}
-
-/**
- * @copydoc firmware_slot_snapshot_internal
- */
-bool firmware_slot_snapshot_internal(uint8_t slot)
-{
-    magic_header_t header;
-    uint32_t source;
-    uint32_t destination;
-    uint32_t remaining;
-    uint32_t chunk;
-    uint32_t erase_size;
-    magic_header_t verify_header;
-
-    if (slot >= W25Q_CHIP_COUNT || !firmware_internal_validate(&header))
-        return false;
-
-    erase_size = header.data_offset + header.data_length;
-    erase_size = (erase_size + W25Q_SECTOR_SIZE - 1) & ~(W25Q_SECTOR_SIZE - 1);
-    if (!w25q_erase((w25q_chip_t)slot, 0, erase_size))
-        return false;
-
-    /* 先复制应用数据，最后写首256字节头；快照中断不会产生有效的半成品槽。 */
-    source = header.data_address;
-    destination = header.data_offset;
-    remaining = header.data_length;
-    while (remaining)
-    {
-        chunk = remaining > INSTALL_CHUNK_SIZE ? INSTALL_CHUNK_SIZE : remaining;
-        if (!w25q_program((w25q_chip_t)slot, destination,
-                          (const uint8_t *)source, chunk))
-            return false;
-        watchdog_refresh();
-        source += chunk;
-        destination += chunk;
-        remaining -= chunk;
-    }
-
-    if (!w25q_program((w25q_chip_t)slot, 0, (const uint8_t *)&header, sizeof(header)))
-        return false;
-    return firmware_slot_validate(slot, &verify_header);
 }

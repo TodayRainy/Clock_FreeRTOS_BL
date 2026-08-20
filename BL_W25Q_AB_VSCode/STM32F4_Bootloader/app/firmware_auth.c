@@ -14,7 +14,7 @@
 #include "firmware_auth.h"
 
 /* 固定域分隔符避免同一把密钥在其他数据格式中的签名被误当作固件签名。 */
-static const uint8_t signature_domain[] = "ClockFW-XBIN-v2";
+static const uint8_t signature_domain[] = "ClockFW-XBIN-Formal-r1";
 
 /**
  * @brief 计算与PC签名工具完全一致的规范化Header摘要。
@@ -28,7 +28,7 @@ static void signature_digest(const magic_header_t *header,
     sha256_context_t context;
     size_t signature_offset = offsetof(magic_header_t, signature);
     size_t after_signature = signature_offset + MAGIC_SIGNATURE_SIZE;
-    size_t crc_offset = offsetof(magic_header_t, this_crc32);
+    size_t crc_offset = offsetof(magic_header_t, header_crc32);
 
     sha256_init(&context);
     sha256_update(&context, signature_domain, sizeof(signature_domain) - 1u);
@@ -44,7 +44,7 @@ bool firmware_authenticate_header(const magic_header_t *header)
 {
     uint8_t digest[SHA256_DIGEST_SIZE];
 
-    if (header->key_id != FIRMWARE_PUBLIC_KEY_ID)
+    if (header->signing_key_id != FIRMWARE_PUBLIC_KEY_ID)
         return false;
 
     signature_digest(header, digest);

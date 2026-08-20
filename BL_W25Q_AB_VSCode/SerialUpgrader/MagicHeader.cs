@@ -1,5 +1,4 @@
 using System.Diagnostics;
-using System.Security.Cryptography;
 using System.Text;
 
 namespace SerialUpgrader;
@@ -10,19 +9,22 @@ public enum MagicHeaderDataType : uint
 }
 
 /// <summary>
-/// XBIN的固定256字节签名Header。v3在偏移256追加64字节AES-GCM描述；上位机
-/// 不持有解密密钥，最终ECDSA、GCM和明文摘要始终由Bootloader验证。
+/// XBIN Formal revision 1的固定320字节Header。Formal只允许ECDSA-P256签名和
+/// AES-256-GCM加密，上位机不持有解密密钥，最终安全校验始终由Bootloader执行。
 /// </summary>
-public class MagicHeader
+public sealed class MagicHeader
 {
-    private const uint CurrentFormatVersion = 2;
-    private const uint HeaderSize = 256;
-    private const int EncryptionHeaderOffset = 256;
-    private const int EncryptionHeaderSize = 64;
+    private const uint FormalMagic = 0x4D524F46; // "FORM"
+    private const uint FormalRevision = 1;
+    private const int HeaderSize = 320;
+    private const int HeaderCrcOffset = 316;
+    private const int HeaderAreaSize = 4096;
 
-    public uint FormatVersion { get; private set; }
-    public uint KeyId { get; private set; }
+    public uint FormatRevision { get; private set; }
+    public uint SigningKeyId { get; private set; }
+    public uint EncryptionKeyId { get; private set; }
     public uint SecurityVersion { get; private set; }
+    public uint ReleaseSequence { get; private set; }
     public MagicHeaderDataType DataType { get; private set; }
     public uint DataOffset { get; private set; }
     public uint DataAddress { get; private set; }
@@ -30,116 +32,77 @@ public class MagicHeader
     public uint DataCrc32 { get; private set; }
     public byte[] ImageSha256 { get; private set; } = [];
     public string Version { get; private set; } = string.Empty;
-    public uint ThisAddress { get; private set; }
-    public bool IsEncrypted { get; private set; }
-    public uint EncryptionKeyId { get; private set; }
-    public int HeaderCommitSize => IsEncrypted
-                                   ? EncryptionHeaderOffset + EncryptionHeaderSize
-                                   : (int)HeaderSize;
+    public int HeaderCommitSize => HeaderSize;
 
     /// <summary>
-    /// 解析并检查待发送的XBIN。这里的SHA-256用于尽早发现本地文件损坏；公钥
-    /// 授权判断始终由Bootloader执行，不能由可替换的PC上位机代替。
+    /// 解析并检查本地XBIN的Formal布局和Header CRC。由于正文是密文，上位机
+    /// 不尝试验证明文摘要；签名、GCM Tag及明文CRC/SHA由Bootloader独立完成。
     /// </summary>
     public static MagicHeader? Parse(byte[] xbin)
     {
-        if (xbin.Length < HeaderSize)
+        if (xbin.Length <= HeaderAreaSize)
         {
-            Trace.WriteLine("数据长度不足256字节，无法解析头部信息");
+            Trace.WriteLine("文件不足4096字节Formal Header区或没有固件正文");
             return null;
         }
 
         uint magic = BitConverter.ToUInt32(xbin, 0);
-        uint formatVersion = BitConverter.ToUInt32(xbin, 4);
+        uint revision = BitConverter.ToUInt32(xbin, 4);
         uint headerSize = BitConverter.ToUInt32(xbin, 8);
-        uint hashAlgorithm = BitConverter.ToUInt32(xbin, 12);
-        uint signatureAlgorithm = BitConverter.ToUInt32(xbin, 16);
-        uint keyId = BitConverter.ToUInt32(xbin, 20);
-        uint securityVersion = BitConverter.ToUInt32(xbin, 24);
-        uint dataType = BitConverter.ToUInt32(xbin, 32);
-        uint dataOffset = BitConverter.ToUInt32(xbin, 36);
-        uint dataAddress = BitConverter.ToUInt32(xbin, 40);
-        uint dataLength = BitConverter.ToUInt32(xbin, 44);
-        uint dataCrc32 = BitConverter.ToUInt32(xbin, 48);
-        byte[] imageSha256 = xbin[52..84];
-        string version = Encoding.ASCII.GetString(xbin, 96, 64).TrimEnd('\0');
-        ReadOnlySpan<byte> signature = xbin.AsSpan(160, 64);
-        uint thisAddress = BitConverter.ToUInt32(xbin, 248);
-        uint thisCrc32 = BitConverter.ToUInt32(xbin, 252);
-        bool encrypted = false;
-        uint encryptionKeyId = 0;
+        uint dataType = BitConverter.ToUInt32(xbin, 12);
+        uint dataOffset = BitConverter.ToUInt32(xbin, 16);
+        uint dataAddress = BitConverter.ToUInt32(xbin, 20);
+        uint dataLength = BitConverter.ToUInt32(xbin, 24);
+        uint dataCrc32 = BitConverter.ToUInt32(xbin, 28);
+        uint securityVersion = BitConverter.ToUInt32(xbin, 32);
+        uint releaseSequence = BitConverter.ToUInt32(xbin, 36);
+        uint hashAlgorithm = BitConverter.ToUInt32(xbin, 40);
+        uint signatureAlgorithm = BitConverter.ToUInt32(xbin, 44);
+        uint encryptionAlgorithm = BitConverter.ToUInt32(xbin, 48);
+        uint signingKeyId = BitConverter.ToUInt32(xbin, 52);
+        uint encryptionKeyId = BitConverter.ToUInt32(xbin, 56);
+        uint reserved0 = BitConverter.ToUInt32(xbin, 60);
+        byte[] imageSha256 = xbin[64..96];
+        string version = Encoding.ASCII.GetString(xbin, 124, 64).TrimEnd('\0');
+        ReadOnlySpan<byte> signature = xbin.AsSpan(188, 64);
+        uint expectedHeaderCrc = BitConverter.ToUInt32(xbin, HeaderCrcOffset);
+        uint actualHeaderCrc = CRC.CRC32(xbin[..HeaderCrcOffset]);
 
-        if (xbin.Length >= EncryptionHeaderOffset + EncryptionHeaderSize &&
-            BitConverter.ToUInt32(xbin, EncryptionHeaderOffset) == 0x33434E45)
+        if (magic != FormalMagic || revision != FormalRevision ||
+            headerSize != HeaderSize)
         {
-            uint encryptionFormat = BitConverter.ToUInt32(xbin, 260);
-            uint encryptionSize = BitConverter.ToUInt32(xbin, 264);
-            uint encryptionAlgorithm = BitConverter.ToUInt32(xbin, 268);
-            encryptionKeyId = BitConverter.ToUInt32(xbin, 272);
-            uint encryptionCrc = BitConverter.ToUInt32(xbin, 316);
-            uint computedEncryptionCrc = CRC.CRC32(xbin[256..316]);
-
-            if (encryptionFormat != 1 || encryptionSize != EncryptionHeaderSize ||
-                encryptionAlgorithm != 1 || encryptionKeyId == 0 ||
-                BitConverter.ToUInt32(xbin, 304) != 0 ||
-                BitConverter.ToUInt32(xbin, 308) != 0 ||
-                BitConverter.ToUInt32(xbin, 312) != 0 ||
-                encryptionCrc != computedEncryptionCrc)
-            {
-                Trace.WriteLine("AES-GCM加密描述无效");
-                return null;
-            }
-            encrypted = true;
-        }
-
-        if (magic != 0x4D414749)
-        {
-            Trace.WriteLine($"无效的头部数据，magic: 0x{magic:X8}");
+            Trace.WriteLine("固件不是XBIN Formal revision 1");
             return null;
         }
-
-        uint computedCrc32 = CRC.CRC32(xbin[..252]);
-        if (thisCrc32 != computedCrc32)
+        if (expectedHeaderCrc != actualHeaderCrc)
         {
-            Trace.WriteLine($"头部数据CRC32校验失败，expected: 0x{thisCrc32:X8}, got: 0x{computedCrc32:X8}");
+            Trace.WriteLine($"Formal Header CRC32失败，expected=0x{expectedHeaderCrc:X8}, got=0x{actualHeaderCrc:X8}");
             return null;
         }
-
-        if (formatVersion != CurrentFormatVersion || headerSize != HeaderSize ||
-            hashAlgorithm != 1 || signatureAlgorithm != 1 ||
-            signature.IndexOfAnyExcept((byte)0) < 0 ||
-            dataType != (uint)MagicHeaderDataType.Application ||
-            dataOffset != 4096 || dataAddress != 0x08010000 ||
+        if (dataType != (uint)MagicHeaderDataType.Application ||
+            dataOffset != HeaderAreaSize || dataAddress != 0x08010000 ||
             dataLength == 0 || dataLength > 0x70000 ||
-            thisAddress != 0x0800C000 ||
-            dataOffset + dataLength != xbin.Length)
+            dataOffset + dataLength != xbin.Length ||
+            hashAlgorithm != 1 || signatureAlgorithm != 1 ||
+            encryptionAlgorithm != 1 || signingKeyId == 0 ||
+            encryptionKeyId == 0 || reserved0 != 0 ||
+            string.IsNullOrEmpty(version) ||
+            signature.IndexOfAnyExcept((byte)0) < 0 ||
+            xbin.AsSpan(252, 64).IndexOfAnyExcept((byte)0) >= 0 ||
+            xbin.AsSpan(HeaderSize, HeaderAreaSize - HeaderSize)
+                .IndexOfAnyExcept((byte)0) >= 0)
         {
-            Trace.WriteLine("签名格式、地址或长度不符合XBIN v2契约");
+            Trace.WriteLine("Formal算法、地址、长度或保留区不符合契约");
             return null;
-        }
-
-        if (!encrypted)
-        {
-            uint computedDataCrc32 = CRC.CRC32(xbin[(int)dataOffset..]);
-            if (computedDataCrc32 != dataCrc32)
-            {
-                Trace.WriteLine($"固件数据CRC32校验失败，expected: 0x{dataCrc32:X8}, got: 0x{computedDataCrc32:X8}");
-                return null;
-            }
-
-            byte[] computedSha256 = SHA256.HashData(xbin.AsSpan((int)dataOffset));
-            if (!computedSha256.SequenceEqual(imageSha256))
-            {
-                Trace.WriteLine("固件数据SHA-256校验失败");
-                return null;
-            }
         }
 
         return new MagicHeader
         {
-            FormatVersion = formatVersion,
-            KeyId = keyId,
+            FormatRevision = revision,
+            SigningKeyId = signingKeyId,
+            EncryptionKeyId = encryptionKeyId,
             SecurityVersion = securityVersion,
+            ReleaseSequence = releaseSequence,
             DataType = (MagicHeaderDataType)dataType,
             DataOffset = dataOffset,
             DataAddress = dataAddress,
@@ -147,9 +110,6 @@ public class MagicHeader
             DataCrc32 = dataCrc32,
             ImageSha256 = imageSha256,
             Version = version,
-            ThisAddress = thisAddress,
-            IsEncrypted = encrypted,
-            EncryptionKeyId = encryptionKeyId,
         };
     }
 }

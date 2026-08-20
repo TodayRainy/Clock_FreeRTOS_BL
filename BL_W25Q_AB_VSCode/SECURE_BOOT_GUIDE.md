@@ -1,245 +1,98 @@
-# 固件签名、IWDG 与维护权限说明
+# Formal 安全启动与防降级说明
 
-本文记录固件签名、防降级、IWDG和维护权限。`v3.5.0-encrypted`新增的保密层见
-[`ENCRYPTED_FIRMWARE_GUIDE.md`](ENCRYPTED_FIRMWARE_GUIDE.md)；原有外部A/B
-状态机、掉电提交顺序和高速串口协议没有被替换。
+本项目的“安全启动”指 Bootloader 在安装和跳转前验证 Formal Header、ECDSA、
+AES-GCM、CRC32、SHA-256、向量表和版本策略。它不是 STM32 Option Bytes 的硬件
+Secure Boot，也没有关闭 SWD。
 
-## 1. 这次解决了什么
+## 1. 信任根
 
-原方案的 CRC32 很适合发现传输错误，但任何人只要能修改固件，也能重新计算
-CRC32。新方案把职责分成三层：
+Bootloader 编入一把 ECDSA-P256 公钥和一把 AES-256 密钥：
 
-| 机制 | 回答的问题 | 不能解决的问题 |
-| --- | --- | --- |
-| CRC32 | 数据在传输/存储时是否意外损坏 | 不能证明固件是谁生成的 |
-| SHA-256 | 当前数据是否与Header记录的摘要一致 | 摘要本身可被攻击者一起替换 |
-| ECDSA-P256 | Header和其中的SHA-256是否由持有私钥的人签发 | 不加密固件；旧签名包由安全版本策略处理 |
-| AES-256-GCM | 公开升级包是否泄露正文、密文是否被改动 | 不代替ECDSA授权；RDP0下不能抵抗SWD物理提取 |
+- 公钥决定哪些 Header 是项目签发的；
+- AES 密钥认证并解密外部 XBIN 正文；
+- Key ID 防止误用另一套密钥；
+- Header 中的 SHA-256 把签名元数据和明文应用绑定。
 
-Bootloader只保存公钥。生成固件的一端保存私钥并对XBIN Header签名，设备端无法
-从公钥反推出私钥。攻击者即使同时修改应用、CRC32、SHA-256和Header CRC32，
-仍然不能生成可通过设备验签的新签名。
+Bootloader 自身由 J-Link/SWD 写入，不在软件链上自验证。因此获得 SWD 写权限的
+人可以替换整个 Bootloader，这也是保留救援能力的明确代价。
 
-另外两项改进分别覆盖运行时和维护面：
+## 2. 两个版本数字
 
-- IWDG在Bootloader启动后一直运行，应用必须继续喂狗；应用核心初始化超时或
-  FreeRTOS调度停止时，硬件会复位并让Trial次数继续收敛到自动回退。
-- DEV构建保留方便调试的维护接口；PROD构建只有启动时持续按住KEY2，确认人在
-  设备旁边后，才开放原始读取/写入和旧内部Flash命令。
-- 独立的安全版本下限阻止普通链路重新安装已淘汰的签名包；KEY2仍可明确授权
-  用户回退，而Trial失败自动恢复旧活动槽不受限制。
+`release_sequence` 表示普通发布先后：功能更新、UI 调整、Bug 修复都递增它。
+自动 OTA 只接受更大的 sequence，同 sequence 不同 SHA 被视为发布冲突。
 
-## 2. XBIN签名Header v2
+`security_version` 表示不可回退的安全代际。应用成功确认后，BCR 把它提升为设备
+下限；低于下限的候选不能自动或普通串口安装。
 
-XBIN仍由4096字节Header区和应用数据组成，数据仍从偏移`0x1000`开始。
-`magic_header_t`保持256字节，并保留旧版中数据描述字段的偏移，便于先用旧
-Bootloader安装一次新签名应用，再迁移Bootloader本身。
+不要每次发布都提高 security version，否则用户将失去选择旧功能版本的能力。
+只有旧版存在已知安全缺陷、确认不能再运行时才提高该值。
 
-加密XBIN v3在偏移256处增加64字节ENC3描述，并把偏移`0x1000`后的应用数据
-替换为等长密文；下面这份签名Header本身仍保持v2格式。
+## 3. 用户主动回退
 
-| 偏移 | 长度 | 字段 |
-| ---: | ---: | --- |
-| 0 | 4 | `MAGI`魔数 |
-| 4 | 4 | 格式版本，当前为2 |
-| 8 | 4 | 结构大小，固定256 |
-| 12 | 4 | 摘要算法，1表示SHA-256 |
-| 16 | 4 | 签名算法，1表示ECDSA-P256/SHA-256 |
-| 20 | 4 | 公钥ID，便于日志识别密钥 |
-| 24 | 4 | 独立安全版本，用于防降级 |
-| 32..48 | 20 | 类型、偏移、目标地址、数据长度、CRC32 |
-| 52 | 32 | 应用数据SHA-256 |
-| 96 | 64 | ASCII版本字符串 |
-| 160 | 64 | ECDSA原始签名，32字节`r`加32字节`s` |
-| 248 | 4 | 内部Header目标地址`0x0800C000` |
-| 252 | 4 | Header前252字节CRC32 |
+KEY2 持续按住进入 Bootloader，代表本次会话具有物理在场授权。DEV/PROD 都可以
+用它明确授权安全版本回退；授权只存在于当前上电会话，复位后消失。
 
-签名输入是域分隔字符串`ClockFW-XBIN-v2`和规范化后的256字节Header。规范化
-时只把签名字段与Header CRC32清零；应用SHA-256、显示版本、安全版本、地址、长度和公钥ID都
-被签名覆盖。Header CRC32最后计算，主要用于快速发现普通误码。
+自动 OTA 永不使用这条授权。它不能因为服务器配置错误把设备降级。上位机应明确
+显示候选和设备安全版本，让用户知道正在执行人工回退。
 
-设备接受一个槽之前依次确认：
+## 4. DEV 与 PROD
 
-1. Header固定字段、地址、长度和Header CRC32正确；
-2. `key_id`与Bootloader内置公钥一致，ECDSA-P256签名通过；
-3. 顺序读取应用，一次性计算CRC32和SHA-256；
-4. 初始MSP位于SRAM/CCMRAM且8字节对齐；
-5. Reset_Handler带Thumb位并位于本应用镜像内。
+两种 profile 使用同一 Formal 格式和项目密钥：
 
-安装到内部Flash后会重新执行数据摘要和向量表检查，最后才写入有效Header。
-因此“外部槽校验正确但复制过程出错”也不会被提交为可启动应用。
+- DEV：工程维护命令默认开放，便于读取 W25Q/EEPROM、修复 BCR 和调试；
+- PROD：原始读写、人工设置槽等维护命令只有 KEY2 物理在场时开放；
+- 正常非活动槽上传、完整验证和激活在两种 profile 中均可使用；
+- RDP、WRP、SWD 和 Option Bytes 均不由 profile 修改。
 
-## 3. 密钥与构建配置
-
-### 3.1 DEV
-
-普通`debug`和`release`预设使用DEV配置。首次运行CMake时，如果`.keys/`下没有
-密钥，会生成一对本机P-256开发密钥：
-
-```text
-.keys/dev_firmware_private.pem
-.keys/dev_firmware_public.pem
-.keys/dev_firmware_aes256.key
-```
-
-整个`.keys/`目录被Git忽略。私钥丢失后，已经烧入对应公钥的Bootloader不会
-接受另一把密钥签发的新固件；开发板仍可通过J-Link重写Bootloader恢复。若要
-长期使用同一开发固件链，应单独备份这三个文件。
+构建 PROD：
 
 ```powershell
-cmake --preset release
-cmake --build --preset validate-release --parallel
-cmake --build --preset security-test-release --parallel
-```
-
-### 3.2 PROD
-
-PROD不会自动生成密钥，必须显式提供一对匹配的PEM文件。建议签名私钥保存在
-构建机之外或离线介质中；源码仓库和设备只需要公钥。
-
-```powershell
-$env:CLOCK_FW_SIGNING_KEY='D:\secure\clock_prod_private.pem'
-$env:CLOCK_FW_VERIFY_KEY='D:\secure\clock_prod_public.pem'
-$env:CLOCK_FW_ENCRYPTION_KEY='D:\secure\clock_prod_aes256.key'
-
 cmake --preset release-prod
-cmake --build --preset validate-release-prod --parallel
+cmake --build --preset release-prod
+cmake --build build/release-prod --target validate_images --parallel 1
 ```
 
-同一套构建会把公钥和AES密钥生成到构建目录并编入Bootloader，再用私钥签名
-Header、用AES-256-GCM加密WeatherClock正文。CMake会拒绝缺少文件、错误长度、
-公私钥不匹配或不是P-256的配置。
+PROD 是协议权限收紧，不等于商业级密钥隔离或物理防拆。
 
-## 4. IWDG 与 Trial 健康确认
+## 5. A/B 安全属性
 
-`shared/watchdog.c`由Bootloader和WeatherClock共同编译。当前使用最大分频与
-最大重装值，按典型32 kHz LSI估算约32秒超时。IWDG一旦启动就不能由软件关闭，
-所以跳转应用前不会尝试“反初始化”；应用会重新写入相同配置并继续刷新。
+活动外部槽是最后一份已确认回退源。任何上传只能写另一槽；候选必须完整验证后
+才能写 `InstallPending`。内部应用安装成功后进入 `Trial`，应用健康确认前不会
+替换活动槽。
 
-Bootloader在以下正常长操作中刷新IWDG：
+失败路径：
 
-- 等待协议和主循环；
-- W25Q块擦除忙等待；
-- 外部槽CRC32/SHA-256扫描；
-- 外部槽向内部Flash复制；
-- 内部Flash复核和外部快照。
+- 候选签名或 GCM 错误：拒绝激活，活动槽不变；
+- 内部安装掉电：保留 `InstallPending`，下次重装；
+- Trial 重启或超时：尝试次数递减，最终回退活动槽；
+- BCR 新页掉电：读取另一份旧页；
+- 两槽都无效：留在 Bootloader，等待 USART3 或 J-Link 救援。
 
-WeatherClock在启动调度器前创建健康监控任务：
+## 6. 首次 Formal 采用
 
-1. 最多给核心初始化20秒宽限，并每秒刷新IWDG；
-2. `board_init()`、`ui_init()`和欢迎页显示成功后调用
-   `health_monitor_mark_ready()`；
-3. 网络连接不是“固件可启动”的条件，临时断网不会触发回退；
-4. A/B确认任务等到ready，再额外观察调度器5秒，才把Trial提交为Normal；
-5. 若20秒仍未ready，监控任务停止喂狗，IWDG最终复位系统。
+外部快照已删除。迁移时先预置一份完整 Formal 外部槽，再写内部 Formal 镜像。
+Bootloader 只有在外部槽与内部 Header 的长度、CRC、SHA、security、release、
+版本和 Key ID 全部一致时才重建 BCR。
 
-这是一套有明确边界的健康标准：它能覆盖核心初始化卡死、调度器不运行和确认前
-反复复位；它不是所有业务任务的心跳框架，也不会因为天气服务器或Wi-Fi不可用
-而回退。后续若要扩大健康条件，应只加入确实代表“这版固件不可用”的稳定信号。
+迁移保存使用独立临时状态，EEPROM 提交成功后才替换 RAM 状态；首次读失败会补读
+一次，避免旧高 sequence 记录压过从 1 开始的新记录。这两点来自本次实板发现的
+真实问题，不是泛化的预见性防御。
 
-DEV构建在CPU被调试器暂停时冻结IWDG，方便单步调试；PROD不设置该调试冻结位。
+## 7. 看门狗和健康确认
 
-## 5. DEV/PROD 维护权限
+Bootloader 启动 IWDG，长时间 W25Q 擦除、内部摘要和安装循环会主动刷新。应用的
+FreeRTOS 健康任务继续喂狗；调试 DEV 时 CPU halt 会冻结 IWDG，正常运行不冻结。
 
-正常升级需要的状态查询、W25擦除/写入非活动槽、签名校验、`SLOT_ACTIVATE`、
-BOOT和RESET在两种配置中都可用。以下接口属于工程维护命令：
+应用只有在核心初始化和稳定窗口通过后才确认 Trial。`configASSERT` 不会返回，
+Wi-Fi 等待使用阻塞延时，不会以空转循环饿死健康任务。
 
-- W25原始读取；
-- EEPROM原始读取和受限写入；
-- 手工设置活动槽与内部固件快照；
-- 旧版内部Flash ERASE/PROGRAM/VERIFY。
+## 8. 仍然存在的安全缺口
 
-DEV始终开放这些命令。PROD只有长按KEY2完整通过3秒进入窗口时开放；仅在串口
-窗口发送数据进入Bootloader不会解锁。未授权调用返回`DENIED`错误码。
+- SWD 与 RDP0 允许物理读取或替换 Bootloader、应用和 AES 密钥；
+- 私钥提交在私人 Git 仓库，仓库账户安全就是签名私钥安全的一部分；
+- 单一公共 AES 密钥泄露会影响全部同类板卡；
+- 没有安全元件、设备证书、一机一密或远程吊销；
+- 没有对 Bootloader 本体做硬件不可变信任链。
 
-即使在DEV中，EEPROM原始写入也只允许`0xFC00..0xFCFF`维护区，不能覆盖位于
-`0xFD00/0xFD80`的两份BCR。Bootloader内部48 KiB仍不能通过在线协议擦写。
-
-### 5.1 防降级与人工回退
-
-XBIN中的`security_version`与`v1.4.0`等显示版本完全独立。BCR保存已确认的
-`minimum_security_version`和当前Trial的`pending_security_version`：
-
-1. 正常`SLOT_ACTIVATE`只接受候选版本不低于已确认下限的签名镜像；
-2. 新值在InstallPending和Trial阶段只作为pending保存，不提前提高下限；
-3. Trial失败仍可安装旧active槽，成功确认时下限才取两者较大值；
-4. KEY2物理授权可安装较低的合法签名镜像，但确认后原下限仍保持不变；
-5. J-Link始终可以作为开发板最终救援手段，本方案不写Option Bytes。
-
-因此功能版本可以通过重新签名的回退包退回；若旧包已经低于安全下限，则必须
-发布一个安全版本不低于下限的新回退包，或由设备所有者在现场使用KEY2授权。
-
-## 6. 迁移现有开发板的安全顺序
-
-当前板上是无签名v1 Header和旧Bootloader时，不应直接先刷v3 Bootloader；v3会
-正确拒绝旧镜像，设备虽可用J-Link救援，但会暂时停在Bootloader。
-
-平滑迁移顺序是：
-
-1. 保留J-Link并先读取512 KiB内部Flash备份；
-2. 使用旧Bootloader和新版SerialUpgrader，把同一个签名XBIN依次完成两次A/B
-   升级，使内部应用和两个外部槽都变为v2签名镜像；
-3. 每次升级后确认BCR回到Normal、应用正常启动；
-4. 只用J-Link写入v3 Bootloader的前48 KiB并立即verify；
-5. 复位后查询版本、BCR和两槽签名状态，再做一次A到B/B到A回归。
-
-旧Bootloader能执行这次过渡，是因为v2仍保留数据类型、偏移、地址、长度和CRC32
-的原字段位置，Header CRC32也仍覆盖前252字节。旧Bootloader只会忽略新签名；
-一旦v3安装完成，所有后续镜像都必须通过真正的签名验证。
-
-## 7. 自动化验证
-
-`security-test-release`包含多类互补测试：
-
-- Python/OpenSSL测试分别篡改Payload、重算CRC32和SHA-256、修改元数据、修改
-  安全版本和签名，确认所有伪造镜像都被拒绝，并锁定v2.1迁移字段偏移；
-- 宿主机GCC直接编译Bootloader使用的`sha256.c`、`uECC.c`和
-  `firmware_auth.c`，确认同一份C代码接受真实XBIN并拒绝修改后的签名/摘要。
-- 宿主机GCC直接编译Bootloader使用的Mbed TLS AES/GCM源码和
-  `firmware_decryption.c`，验证流式解密、Tag认证与错误Tag拒绝。
-- Python测试继续篡改密文、Nonce、AES密钥ID和Tag，确认ENC3描述与密文受认证。
-- 另一份宿主机C测试覆盖正常升级、降级拒绝、KEY2授权和下限只增不减规则。
-
-Debug、Release、PROD Release仍分别执行链接区、MSP、Reset_Handler、Payload
-一致性、CRC32、SHA-256、公钥ID和ECDSA签名检查。
-
-### 7.1 实板验证（2026-08-18）
-
-自动化测试之外，当前硬件还完成了以下真实链路测试：
-
-- 从无签名v2.1平滑迁移两个外部槽，再用J-Link写入v3 Bootloader；
-- v3签名升级、Trial健康确认和A/B切换完整跑通；
-- 一个重新计算CRC32、SHA-256和Header CRC但没有新私钥签名的伪造XBIN被STM32
-  在激活阶段拒绝，活动槽没有改变；
-- 故意安装最初存在IWDG初始化缺陷的应用后，三次Trial耗尽并自动恢复原活动槽；
-- PROD未按KEY2时只读维护探针返回`DENIED`，DEV返回`ALLOWED`；
-- 应用连续运行超过IWDG完整周期后，J-Link确认PC仍位于应用区。
-
-2026-08-19继续完成防降级实板验证：旧BCR无损迁移为安全下限0；安全版本1在
-Trial确认前保持`0/1`，确认后提升到1；正常链路完整接收安全版本0后在激活阶段
-返回`DENIED`且活动槽不变；通过J-Link置位与KEY2相同的会话RAM标志后，版本0
-可安装但下限仍为1。最后再做两次版本1升级，两槽均恢复为当前签名镜像。
-
-上位机可用下面的无写入命令复核维护权限。它只尝试读取W25Q A槽首字节，结束后
-发送BOOT命令：
-
-```powershell
-dotnet .\SerialUpgrader\bin\Release\net8.0-windows\SerialUpgrader.dll `
-  --maintenance-probe COM18
-```
-
-详细序列号、CRC、备份哈希和最终BCR见`SAFETY_BASELINE.md`。
-
-## 8. 当前尚未覆盖的工业化能力
-
-安全版本下限保存在EEPROM双副本BCR中，没有使用不可逆硬件计数器；拥有J-Link的
-设备所有者仍能恢复或重置开发板。XBIN v3正文已经加密，但为了保留J-Link救援，
-设备仍处于RDP Level 0，内部Flash保存明文应用且Bootloader中包含AES密钥。因此
-它能防止公开升级包和外部Flash直接泄露固件，不能抵抗可接触SWD的物理攻击者。
-
-外部槽断点续传只用分块CRC定位已经存在的数据，最终信任边界没有改变；完整流程
-和中断测试见`RESUMABLE_UPGRADE_GUIDE.md`。
-
-micro-ecc按其BSD-2-Clause许可原样放在
-`STM32F4_Bootloader/third_lib/micro-ecc/`，来源提交和裁剪方式记录在同目录
-`VENDOR.md`。当前只编译secp256r1验签所需能力。
+这些限制是“个人学习项目 + 必须可救援”的主动取舍。若未来商业化，应重新设计
+密钥保管、RDP/WRP、调试解锁、生产烧录和设备身份，不能直接沿用当前密钥。

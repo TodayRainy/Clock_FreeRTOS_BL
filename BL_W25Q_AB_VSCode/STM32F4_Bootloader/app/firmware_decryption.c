@@ -1,29 +1,36 @@
 /**
  * @file firmware_decryption.c
- * @brief 使用 Mbed TLS 实现 XBIN v3 的 AES-256-GCM 流式解密。
+ * @brief 使用Mbed TLS实现XBIN Formal的AES-256-GCM流式解密。
  */
 
+#include <string.h>
 #include "mbedtls/constant_time.h"
 #include "firmware_encryption_key.h"
 #include "firmware_decryption.h"
 
 bool firmware_decryption_begin(firmware_decryption_t *context,
-                               const magic_header_t *header,
-                               const xbin_encryption_header_t *encryption)
+                               const magic_header_t *header)
 {
-    if (encryption->key_id != FIRMWARE_ENCRYPTION_KEY_ID)
+    magic_header_t aad;
+
+    if (header->encryption_key_id != FIRMWARE_ENCRYPTION_KEY_ID)
         return false;
+
+    /* 与打包器一致：GCM先于Tag和签名生成，因此AAD中清零这三个字段。 */
+    aad = *header;
+    memset(aad.encryption_tag, 0, sizeof(aad.encryption_tag));
+    memset(aad.signature, 0, sizeof(aad.signature));
+    aad.header_crc32 = 0u;
 
     mbedtls_gcm_init(&context->gcm);
     if (mbedtls_gcm_setkey(&context->gcm, MBEDTLS_CIPHER_ID_AES,
                            firmware_encryption_key,
-                           XBIN_ENCRYPTION_KEY_SIZE * 8u) != 0 ||
+                           MAGIC_ENCRYPTION_KEY_SIZE * 8u) != 0 ||
         mbedtls_gcm_starts(&context->gcm, MBEDTLS_GCM_DECRYPT,
-                           encryption->nonce, sizeof(encryption->nonce)) != 0 ||
-        mbedtls_gcm_update_ad(&context->gcm, (const uint8_t *)header,
-                              sizeof(*header)) != 0 ||
-        mbedtls_gcm_update_ad(&context->gcm, (const uint8_t *)encryption,
-                              XBIN_ENCRYPTION_AAD_PREFIX_SIZE) != 0)
+                           header->encryption_nonce,
+                           sizeof(header->encryption_nonce)) != 0 ||
+        mbedtls_gcm_update_ad(&context->gcm, (const uint8_t *)&aad,
+                              sizeof(aad)) != 0)
     {
         mbedtls_gcm_free(&context->gcm);
         return false;
@@ -40,14 +47,14 @@ bool firmware_decryption_update(firmware_decryption_t *context,
 }
 
 bool firmware_decryption_finish(firmware_decryption_t *context,
-                                const xbin_encryption_header_t *encryption,
+                                const magic_header_t *header,
                                 uint8_t *output, size_t output_size,
                                 size_t *output_length)
 {
-    uint8_t tag[XBIN_ENCRYPTION_TAG_SIZE];
+    uint8_t tag[MAGIC_ENCRYPTION_TAG_SIZE];
     bool ok = mbedtls_gcm_finish(&context->gcm, output, output_size,
                                  output_length, tag, sizeof(tag)) == 0 &&
-              mbedtls_ct_memcmp(tag, encryption->tag, sizeof(tag)) == 0;
+              mbedtls_ct_memcmp(tag, header->encryption_tag, sizeof(tag)) == 0;
 
     mbedtls_gcm_free(&context->gcm);
     return ok;

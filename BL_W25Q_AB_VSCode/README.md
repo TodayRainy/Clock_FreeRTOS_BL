@@ -1,94 +1,140 @@
-# BL_W25Q_AB_VSCode
+# Clock STM32F407 Formal A/B Bootloader
 
-这是从 `BL_W25Q_AB` 独立复制后完成 VS Code + CMake + GCC + GDB 迁移和
-实板回归的外部 A/B Bootloader 版本。原 `BL_W25Q_AB` 没有被覆盖。
+本目录是天气时钟项目当前主线：STM32F407、双 W25Q128、BL24C512、ESP-AT、
+FreeRTOS、USART3 上位机和腾讯云 COS OTA 共同组成一套可回退的固件升级系统。
 
-- Bootloader：`STM32F4_Bootloader/`
-- 天气时钟应用与 XBIN 生成：`WeatherClock/`
-- WinForms/命令行升级工具：`SerialUpgrader/`
-- VS Code/GCC 迁移、构建、调试和实测说明：[`VSCODE_GCC_MIGRATION.md`](VSCODE_GCC_MIGRATION.md)
-- 当前代码架构、状态机、协议与维护指南：[`CODE_GUIDE.md`](CODE_GUIDE.md)
-- 固件签名、看门狗和 DEV/PROD 权限说明：[`SECURE_BOOT_GUIDE.md`](SECURE_BOOT_GUIDE.md)
-- XBIN v3 加密格式、密钥和迁移说明：[`ENCRYPTED_FIRMWARE_GUIDE.md`](ENCRYPTED_FIRMWARE_GUIDE.md)
-- 断点续传协议、掉电边界和实测说明：[`RESUMABLE_UPGRADE_GUIDE.md`](RESUMABLE_UPGRADE_GUIDE.md)
-- COS OTA、后台任务、发布流程和掉电续传说明：[`OTA_GUIDE.md`](OTA_GUIDE.md)
-- `v1.6.6` OTA版本的代码、产物、测试与已知边界：[`RELEASE_NOTES_v1.6.6.md`](RELEASE_NOTES_v1.6.6.md)
-- `v1.7.0`发布序号、旧包拒绝和OTA冗余清理：[`RELEASE_NOTES_v1.7.0.md`](RELEASE_NOTES_v1.7.0.md)
-- `v1.8.x`加密XBIN、USART3/OTA实板回归：[`RELEASE_NOTES_v1.8.0.md`](RELEASE_NOTES_v1.8.0.md)
-- 设计、测试、使用和 ST-Link 救援说明：[`AB_BOOTLOADER_REPORT.md`](AB_BOOTLOADER_REPORT.md)
-- 初始及最终安全基线：[`SAFETY_BASELINE.md`](SAFETY_BASELINE.md)
+当前固件容器统一称为 **XBIN Formal revision 1**。它只保留一种形态：
 
-正式升级只写非活动 W25Q128 槽，Bootloader 本身不支持在线自更新。
+- ECDSA-P256 签名为必选；
+- AES-256-GCM 加密为必选；
+- 320 字节统一 Header；
+- 外部 W25Q 保存密文，STM32 内部 Flash 保存认证后的明文应用；
+- 不接受旧 XBIN，也不再提供内部固件外部快照命令。
 
-当前开发版 Bootloader 为 `v3.5.0-encrypted-dev/prod`。它保留原有2 Mbps、
-USART3 DMA、8 KiB流水传输和W25Q SPI DMA，并接受明文签名XBIN v2与
-AES-256-GCM加密XBIN v3。Bootloader先认证并解密v3密文，再用内置公钥完成
-ECDSA-P256验签，并复核明文SHA-256、CRC32和向量表后才允许安装。
-Bootloader与应用共用IWDG，Trial只有在核心板级/显示初始化完成并继续稳定调度
-5秒后才会确认并提高安全版本下限。普通升级禁止安装低于下限的固件；长按KEY2
-可人工安装合法签名的旧版本，但不会降低下限。PROD的原始维护命令也要求KEY2。
-外部槽上传默认按4 KiB CRC扫描已写数据，从安全断点继续；旧Bootloader不支持
-新命令时自动回退完整升级，用户也可以显式选择强制完整重写。
+Formal 是产品线名称，不使用“v4”作为格式名称。Header 中仍保留数值型
+`format_revision=1`，用于严格解析二进制布局。
 
-WeatherClock还支持从腾讯云COS检查签名加密XBIN：首次本地温湿度和在线天气均刷新
-成功后，再延迟60秒检查，以后每24小时检查一次；发现发布序号更大的版本时直接
-下载、校验并暂存到非活动槽，但不会自动复位。USART1输入`u`可立即执行同样
-流程。OTA下载每32 KiB保存一次进度，完成后三颗板载LED常亮，用户按RESET才由
-Bootloader重新验签并安装。
+## 当前基线
 
-常用命令：
+| 项目 | 当前值 |
+|---|---|
+| Bootloader | `formal-1.0.0-dev` |
+| WeatherClock | `formal-1.0.0` |
+| XBIN | Formal revision 1 |
+| release sequence | 4 |
+| security version | 2 |
+| 签名 Key ID | `0xCA9EEE70` |
+| AES Key ID | `0x9B5260DC` |
+| Bootloader Flash | 34,800 / 49,152 字节，70.80% |
+| WeatherClock Flash | 158,024 / 458,752 字节，34.45% |
+| 公网 Manifest | `https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/manifest.json` |
+
+2026-08-20 的实板最终状态为 `Normal / active=B / pending=none / seq=320`，
+内部应用与 A/B 两槽均通过 Formal Header、ECDSA、AES-GCM、CRC32、SHA-256 和
+向量表检查。完整 USART3 重写的 W25 编程耗时 2.11 秒，总提交耗时 2.72 秒；
+相同镜像断点复用 158,024 字节，总提交耗时 0.81 秒。
+
+## 工程组成
+
+- `STM32F4_Bootloader/`：启动决策、A/B 状态机、验签、解密、安装、回退和协议；
+- `WeatherClock/`：FreeRTOS 天气时钟、联网、COS OTA 下载和试运行确认；
+- `SerialUpgrader/`：Windows USART3 上位机与命令行升级工具；
+- `shared/`：Formal Header、BCR、OTA 请求和安全策略的跨固件契约；
+- `tools/`：打包、Manifest、主机负向测试和 J-Link 救援脚本；
+- `keys/`：本私人学习项目使用的 Formal 签名与加密密钥；
+- `ota/manifest.json`：当前可发布的 Formal OTA 清单。
+
+核心说明：
+
+- [CODE_GUIDE.md](CODE_GUIDE.md)：代码边界和完整运行流程；
+- [ENCRYPTED_FIRMWARE_GUIDE.md](ENCRYPTED_FIRMWARE_GUIDE.md)：Formal 签名与加密设计；
+- [OTA_GUIDE.md](OTA_GUIDE.md)：COS OTA 下载、提交和发布顺序；
+- [RESUMABLE_UPGRADE_GUIDE.md](RESUMABLE_UPGRADE_GUIDE.md)：USART3 断点续传；
+- [SECURE_BOOT_GUIDE.md](SECURE_BOOT_GUIDE.md)：防降级、DEV/PROD 和信任边界；
+- [SAFETY_BASELINE.md](SAFETY_BASELINE.md)：救援镜像与实板测试记录。
+
+## 构建和验证
+
+Windows 原生工作流需要 CMake、Ninja、`arm-none-eabi-gcc`、Python 3、主机
+GCC、OpenSSL 和 .NET 8。
 
 ```powershell
-cmake --preset debug
-cmake --build --preset validate-debug --parallel
-
 cmake --preset release
-cmake --build --preset validate-release --parallel
-
-# 运行篡改镜像和Bootloader同源C验签测试
-cmake --build --preset security-test-release --parallel
+cmake --build --preset release
+cmake --build build/release --target validate_images --parallel 1
+cmake --build build/release --target test_firmware_security --parallel 1
+dotnet build SerialUpgrader/SerialUpgrader.csproj -c Release
 ```
 
-`FIRMWARE_SECURITY_VERSION`是独立于显示版本的非负整数，默认值为1。只有修复安全
-问题、决定淘汰旧签名固件时才提高它；普通功能版本发布不必每次递增。
+关键产物：
 
-`FIRMWARE_RELEASE_SEQUENCE`是普通 OTA 发布序号，默认从1开始。每次发布不同内容
-都必须递增；自动 OTA 拒绝更小的序号，也拒绝“相同序号、不同 SHA”的替换包。
-版本字符串仍用于显示，USART3/KEY2人工维护仍可主动安装旧版本。
+- `build/release/STM32F4_Bootloader/stm32f407.bin`；
+- `build/release/WeatherClock/stm32f407.bin`；
+- `build/release/WeatherClock/stm32f407_formal_header.bin`；
+- `build/release/WeatherClock/stm32f407_upgrade.xbin`；
+- `SerialUpgrader/bin/Release/net8.0-windows/SerialUpgrader.exe`。
 
-第一次DEV配置会在被Git忽略的`.keys/`下生成本机签名密钥和32字节AES开发密钥。
-正式发布必须使用`release-prod`和外部提供的签名/加密密钥，私钥和AES密钥都不能
-提交到仓库。
-
-命令行升级：
+版本参数通过 CMake cache 设置，不应直接修改生成文件：
 
 ```powershell
-dotnet .\SerialUpgrader\bin\Release\net8.0-windows\SerialUpgrader.dll `
-  --upgrade COM18 .\build\release\WeatherClock\stm32f407_upgrade.xbin
+cmake --preset release `
+  -DWEATHERCLOCK_VERSION=formal-1.0.1 `
+  -DFIRMWARE_RELEASE_SEQUENCE=5 `
+  -DFIRMWARE_SECURITY_VERSION=2
 ```
 
-禁用断点续传并强制完整重写时，把`--upgrade`换成`--upgrade-full`。图形界面提供
-同名复选框。
+普通功能发布递增 `release_sequence`。只有修复了不能再允许回退的安全问题时，
+才递增 `security_version`。
 
-端口号以Windows当前枚举为准。命令末尾可增加 `921600`，在较长或质量一般的
-TTL接线上使用较保守的高速档。
+## USART3 升级
 
-只读检查当前构建是否开放工程维护接口：
+上位机先以 115200 连接，再协商到 2 Mbaud。完整重写：
 
 ```powershell
-dotnet .\SerialUpgrader\bin\Release\net8.0-windows\SerialUpgrader.dll `
-  --maintenance-probe COM18
+dotnet SerialUpgrader/bin/Release/net8.0-windows/SerialUpgrader.dll `
+  --upgrade-full COM29 build/release/WeatherClock/stm32f407_upgrade.xbin
 ```
 
-当前实板已完成v3签名升级、伪造签名拒绝、Trial自动回退、DEV/PROD权限、IWDG
-持续运行以及11.9%/51.7%/96.7%三次传输中断恢复测试；板载最终状态与可恢复的
-512 KiB镜像记录在`SAFETY_BASELINE.md`。
+允许断点复用：
 
-最新已确认的实板版本为`v1.8.1-encrypted-ota-test / release 3`，Bootloader为
-`v3.5.0-encrypted-dev`。release 2先经USART3加密升级完成，release 3再经COS
-加密OTA完成，两个外部槽和最终BCR均通过全量检查。当前公网清单保存在
-`ota/manifest.json`，详细数据见`RELEASE_NOTES_v1.8.0.md`；v1.6.6的断点续传
-与28 KiB/s实测结论继续有效。
+```powershell
+dotnet SerialUpgrader/bin/Release/net8.0-windows/SerialUpgrader.dll `
+  --upgrade COM29 build/release/WeatherClock/stm32f407_upgrade.xbin
+```
 
-每个配置的 ELF、HEX、BIN 和 XBIN 位于 `build/debug` 或 `build/release`，不会
-相互覆盖。应用仍必须通过 XBIN/A-B 流程安装；不要把裸应用 BIN 当作正常升级包。
+上位机只写非活动槽。完整 Formal 校验和 `InstallPending` 提交成功后才复位；
+Bootloader 安装到内部 Flash，应用稳定运行并完成健康确认后才把新槽设为活动槽。
+
+## 首次部署与旧设备迁移
+
+Formal Bootloader 不再把内部应用复制到外部 Flash。首次部署应按以下顺序：
+
+1. 保留 SWD/J-Link 和一份已验证的整片内部 Flash 备份；
+2. 先把完整 Formal XBIN 放入任一外部槽；
+3. 再写入 Formal Bootloader、320 字节 Header 和明文应用；
+4. Formal Bootloader 验证外部槽与内部发布完全一致后，重建 BCR 并采用该槽。
+
+若 BCR 是旧状态，但不再能引用任何 Formal Header，Bootloader 只在找到一份
+签名、GCM、摘要、版本和内部应用全部匹配的外部槽时才重建关系。它不会凭空制造
+回退副本，也不会覆盖现有槽。
+
+## 救援边界
+
+项目保持 RDP0、SWD 和 Option Bytes 不变。当前整片内部 Flash 救援镜像为：
+
+`../.device-backups/stm32f407_formal_1_0_0_final_20260820.bin`
+
+长度 524,288 字节，SHA-256：
+
+`FBCB8245952C87C6333FC71CAA8A5C5DB7A9987A2573788C3855707B43BA94DF`
+
+配套脚本位于 `tools/jlink/backup_formal_1_0_0_final.jlink`、
+`restore_formal_1_0_0_final.jlink` 和 `verify_formal_1_0_0_final.jlink`。
+这些脚本只读写 STM32 内部 512 KiB Flash，不修改 RDP、WRP 或其他 Option Bytes。
+
+## 密钥说明
+
+用户明确允许把 `keys/` 提交到私人 Git 仓库，以方便个人项目复现和救援。这不是
+商业密钥管理方案：RDP0 下，能接触 SWD 或读取 Bootloader 的人仍可能取得 AES
+密钥。当前加密主要防止 COS 文件、串口传输和外部 W25Q 内容被直接读取，不以
+抵抗物理拆机为目标。

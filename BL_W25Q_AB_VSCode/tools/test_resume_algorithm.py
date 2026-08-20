@@ -66,8 +66,8 @@ def test_real_xbin(path: Path) -> None:
     if len(xbin) < DATA_OFFSET:
         raise ValueError("XBIN shorter than the fixed data offset")
 
-    data_offset = struct.unpack_from("<I", xbin, 36)[0]
-    data_length = struct.unpack_from("<I", xbin, 44)[0]
+    data_offset = struct.unpack_from("<I", xbin, 16)[0]
+    data_length = struct.unpack_from("<I", xbin, 24)[0]
     if data_offset != DATA_OFFSET or not 0 < data_length <= MAX_DATA_LENGTH:
         raise ValueError("XBIN data layout does not match the resume protocol")
     if data_offset + data_length != len(xbin):

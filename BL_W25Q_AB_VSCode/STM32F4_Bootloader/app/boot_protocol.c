@@ -15,7 +15,6 @@
 #include "stm32f4xx.h"
 #include "bl_usart.h"
 #include "tim_delay.h"
-#include "stm32_flash.h"
 #include "w25q.h"
 #include "bl24c512.h"
 #include "boot_state.h"
@@ -32,9 +31,9 @@
 #include "elog.h"
 
 #ifdef FIRMWARE_BUILD_PROFILE_DEV
-#define BL_VERSION       "v3.5.0-encrypted-dev"
+#define BL_VERSION       "formal-1.0.0-dev"
 #else
-#define BL_VERSION       "v3.5.0-encrypted-prod"
+#define BL_VERSION       "formal-1.0.0-prod"
 #endif
 #define RX_TIMEOUT_MS              20u
 #define HIGH_SPEED_IDLE_TIMEOUT_MS 2000u
@@ -52,8 +51,6 @@
 #define PACKET_CRC_SIZE         2u
 #define PACKET_MIN_SIZE         6u
 
-#define ADDR_SIZE_PARAM_LENGTH        8u
-#define ADDR_SIZE_CRC_PARAM_LENGTH    12u
 #define W25_READ_PARAM_LENGTH         7u
 #define W25_ERASE_PARAM_LENGTH        9u
 #define W25_PROGRAM_HEADER_LENGTH     7u
@@ -93,13 +90,9 @@ typedef enum
     PACKET_OPCODE_SLOT_STATUS = 0x50,
     PACKET_OPCODE_SLOT_SET_ACTIVE = 0x51,
     PACKET_OPCODE_SLOT_ACTIVATE = 0x52,
-    PACKET_OPCODE_SLOT_SNAPSHOT = 0x53,
     PACKET_OPCODE_SLOT_STATUS_FAST = 0x54,
     PACKET_OPCODE_SECURITY_STATUS = 0x55,
     PACKET_OPCODE_SLOT_RESUME_SCAN = 0x56,
-    PACKET_OPCODE_ERASE = 0x81,
-    PACKET_OPCODE_PROGRAM = 0x82,
-    PACKET_OPCODE_VERIFY = 0x83,
 } packet_opcode_t;
 
 typedef enum
@@ -176,10 +169,6 @@ static bool opcode_requires_maintenance(packet_opcode_t opcode)
         case PACKET_OPCODE_EEPROM_READ:
         case PACKET_OPCODE_EEPROM_WRITE:
         case PACKET_OPCODE_SLOT_SET_ACTIVE:
-        case PACKET_OPCODE_SLOT_SNAPSHOT:
-        case PACKET_OPCODE_ERASE:
-        case PACKET_OPCODE_PROGRAM:
-        case PACKET_OPCODE_VERIFY:
             return true;
 
         default:
@@ -225,27 +214,6 @@ static void protocol_response(packet_opcode_t opcode, packet_errcode_t error,
     put_u16_inc(&cursor, crc);
     bl_usart_write(response, cursor - response);
     protocol_last_activity_ms = tim_get_ms();
-}
-
-/**
- * @brief 判断一段STM32内部Flash范围是否完全有效。
- */
-static bool internal_flash_range_valid(uint32_t address, uint32_t size)
-{
-    uint32_t flash_end = STM32_FLASH_BASE + STM32_FLASH_SIZE;
-
-    return size > 0 && address >= STM32_FLASH_BASE &&
-           address < flash_end && size <= flash_end - address;
-}
-
-/**
- * @brief 判断旧调试命令是否会触及Bootloader保留区。
- */
-static bool internal_flash_range_protected(uint32_t address, uint32_t size)
-{
-    uint32_t end = address + size;
-
-    return address < MAGIC_HEADER_ADDR && end > STM32_FLASH_BASE;
 }
 
 /**
@@ -472,7 +440,7 @@ static void handle_slot_status(void)
 {
     boot_state_t state;
     magic_header_t header;
-    uint8_t result[101];
+    uint8_t result[102];
     uint8_t *cursor = result;
     uint32_t slot;
     bool state_found;
@@ -505,6 +473,8 @@ static void handle_slot_status(void)
             cursor += 32;
         }
     }
+    /* 完整健康检查同时报告内部Flash镜像，便于区分槽损坏与安装区损坏。 */
+    *cursor++ = firmware_internal_validate(&header) ? 1u : 0u;
     protocol_response(PACKET_OPCODE_SLOT_STATUS, PACKET_ERRCODE_OK,
                       result, cursor - result);
 }
@@ -689,28 +659,23 @@ static void handle_slot_activate(void)
     boot_state_t state;
     magic_header_t header;
     uint8_t *payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
-    uint32_t expected_crc = 0;
+    uint32_t expected_crc;
     uint8_t slot;
 
-    /*
-     * 1字节格式兼容旧上位机；新上位机额外发送目标XBIN的数据CRC32。
-     * 这样完整槽只需由本命令扫描一次，仍能确认Bootloader看到的镜像就是
-     * 上位机刚刚选择的那个文件。
-     */
-    if (packet_payload_length != 1 && packet_payload_length != 5)
+    /* Formal协议固定携带目标XBIN的数据CRC32，不再接受旧1字节激活格式。 */
+    if (packet_payload_length != 5)
     {
         protocol_response(PACKET_OPCODE_SLOT_ACTIVATE, PACKET_ERRCODE_PARAM, NULL, 0);
         return;
     }
 
     slot = payload[0];
-    if (packet_payload_length == 5)
-        expected_crc = get_u32(payload + 1);
+    expected_crc = get_u32(payload + 1);
 
     if (!boot_state_load(&state) || state.phase != BOOT_PHASE_NORMAL ||
         state.active_slot >= BOOT_SLOT_COUNT || slot >= BOOT_SLOT_COUNT ||
         slot == state.active_slot || !firmware_slot_validate(slot, &header) ||
-        (packet_payload_length == 5 && header.data_crc32 != expected_crc))
+        header.data_crc32 != expected_crc)
     {
         protocol_response(PACKET_OPCODE_SLOT_ACTIVATE, PACKET_ERRCODE_VERIFY, NULL, 0);
         return;
@@ -742,39 +707,6 @@ static void handle_slot_activate(void)
     protocol_response(PACKET_OPCODE_SLOT_ACTIVATE, PACKET_ERRCODE_OK, NULL, 0);
     tim_delay_ms(5);
     NVIC_SystemReset();
-}
-
-static void handle_slot_snapshot(void)
-{
-    boot_state_t state;
-    magic_header_t header;
-    uint8_t slot;
-
-    if (packet_payload_length != 1)
-    {
-        protocol_response(PACKET_OPCODE_SLOT_SNAPSHOT, PACKET_ERRCODE_PARAM, NULL, 0);
-        return;
-    }
-
-    slot = packet_buffer[PACKET_PAYLOAD_OFFSET];
-    if ((boot_state_load(&state) && state.active_slot < BOOT_SLOT_COUNT) ||
-        slot >= BOOT_SLOT_COUNT || !firmware_slot_snapshot_internal(slot) ||
-        !firmware_slot_validate(slot, &header))
-    {
-        protocol_response(PACKET_OPCODE_SLOT_SNAPSHOT, PACKET_ERRCODE_VERIFY, NULL, 0);
-        return;
-    }
-
-    boot_state_default(&state);
-    state.active_slot = slot;
-    state.active_crc32 = header.data_crc32;
-    state.minimum_security_version = header.security_version;
-    if (!boot_state_save(&state))
-    {
-        protocol_response(PACKET_OPCODE_SLOT_SNAPSHOT, PACKET_ERRCODE_VERIFY, NULL, 0);
-        return;
-    }
-    protocol_response(PACKET_OPCODE_SLOT_SNAPSHOT, PACKET_ERRCODE_OK, NULL, 0);
 }
 
 static void handle_w25_erase(void)
@@ -866,97 +798,6 @@ static void handle_w25_program(bool async_ack)
         protocol_response(packet_opcode, PACKET_ERRCODE_OK, NULL, 0);
 }
 
-/* 以下三个内部Flash命令仅为旧上位机和维护场景保留。 */
-static void handle_legacy_erase(void)
-{
-    uint8_t *payload;
-    uint32_t address;
-    uint32_t size;
-    bool ok;
-
-    if (packet_payload_length != ADDR_SIZE_PARAM_LENGTH)
-    {
-        protocol_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, NULL, 0);
-        return;
-    }
-
-    payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
-    address = get_u32_inc(&payload);
-    size = get_u32_inc(&payload);
-    if (!internal_flash_range_valid(address, size) ||
-        internal_flash_range_protected(address, size))
-    {
-        protocol_response(PACKET_OPCODE_ERASE, PACKET_ERRCODE_PARAM, NULL, 0);
-        return;
-    }
-
-    stm32_flash_unlock();
-    ok = stm32_flash_erase(address, size);
-    stm32_flash_lock();
-    protocol_response(PACKET_OPCODE_ERASE,
-                      ok ? PACKET_ERRCODE_OK : PACKET_ERRCODE_VERIFY, NULL, 0);
-}
-
-static void handle_legacy_program(void)
-{
-    uint8_t *payload;
-    uint32_t address;
-    uint32_t size;
-    bool ok;
-
-    if (packet_payload_length <= ADDR_SIZE_PARAM_LENGTH)
-    {
-        protocol_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, NULL, 0);
-        return;
-    }
-
-    payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
-    address = get_u32_inc(&payload);
-    size = get_u32_inc(&payload);
-    if (size != packet_payload_length - ADDR_SIZE_PARAM_LENGTH ||
-        !internal_flash_range_valid(address, size) ||
-        internal_flash_range_protected(address, size))
-    {
-        protocol_response(PACKET_OPCODE_PROGRAM, PACKET_ERRCODE_PARAM, NULL, 0);
-        return;
-    }
-
-    stm32_flash_unlock();
-    ok = stm32_flash_program(address, payload, size);
-    stm32_flash_lock();
-    protocol_response(PACKET_OPCODE_PROGRAM,
-                      ok ? PACKET_ERRCODE_OK : PACKET_ERRCODE_VERIFY, NULL, 0);
-}
-
-static void handle_legacy_verify(void)
-{
-    uint8_t *payload;
-    uint32_t address;
-    uint32_t size;
-    uint32_t expected_crc;
-
-    if (packet_payload_length != ADDR_SIZE_CRC_PARAM_LENGTH)
-    {
-        protocol_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, NULL, 0);
-        return;
-    }
-
-    payload = packet_buffer + PACKET_PAYLOAD_OFFSET;
-    address = get_u32_inc(&payload);
-    size = get_u32_inc(&payload);
-    expected_crc = get_u32_inc(&payload);
-    if (!internal_flash_range_valid(address, size))
-    {
-        protocol_response(PACKET_OPCODE_VERIFY, PACKET_ERRCODE_PARAM, NULL, 0);
-        return;
-    }
-
-    protocol_response(PACKET_OPCODE_VERIFY,
-                      crc32((const uint8_t *)address, size) == expected_crc ?
-                      PACKET_ERRCODE_OK : PACKET_ERRCODE_VERIFY,
-                      NULL, 0);
-}
-
 /**
  * @brief 执行一个已经完成CRC校验的请求帧。
  */
@@ -984,14 +825,9 @@ static boot_protocol_action_t handle_packet(void)
         case PACKET_OPCODE_SLOT_STATUS:     handle_slot_status(); break;
         case PACKET_OPCODE_SLOT_SET_ACTIVE: handle_slot_set_active(); break;
         case PACKET_OPCODE_SLOT_ACTIVATE:   handle_slot_activate(); break;
-        case PACKET_OPCODE_SLOT_SNAPSHOT:   handle_slot_snapshot(); break;
         case PACKET_OPCODE_SLOT_STATUS_FAST: handle_slot_status_fast(); break;
         case PACKET_OPCODE_SECURITY_STATUS: handle_security_status(); break;
         case PACKET_OPCODE_SLOT_RESUME_SCAN: handle_slot_resume_scan(); break;
-        case PACKET_OPCODE_ERASE:           handle_legacy_erase(); break;
-        case PACKET_OPCODE_PROGRAM:         handle_legacy_program(); break;
-        case PACKET_OPCODE_VERIFY:          handle_legacy_verify(); break;
-
         case PACKET_OPCODE_RESET:
             if (packet_payload_length != 0)
             {

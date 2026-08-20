@@ -54,12 +54,12 @@ namespace SerialUpgrader
                 return 1;
             }
 
-            Console.WriteLine($"XBIN v{header.FormatVersion}, Key ID 0x{header.KeyId:X8}");
+            Console.WriteLine($"XBIN Formal revision {header.FormatRevision}");
+            Console.WriteLine($"签名 Key ID: 0x{header.SigningKeyId:X8}");
             Console.WriteLine($"安全版本: {header.SecurityVersion}");
+            Console.WriteLine($"发布序号: {header.ReleaseSequence}");
             Console.WriteLine($"SHA-256 {Convert.ToHexString(header.ImageSha256)}");
-            Console.WriteLine(header.IsEncrypted
-                ? $"加密 AES-256-GCM (key 0x{header.EncryptionKeyId:X8})"
-                : "加密 未启用");
+            Console.WriteLine($"加密 AES-256-GCM (key 0x{header.EncryptionKeyId:X8})");
 
             using Transfer transfer = new(port);
             transfer.OnEvent += Console.WriteLine;
@@ -111,6 +111,7 @@ namespace SerialUpgrader
                               $"active={SlotName(status.ActiveSlot)}, pending={SlotName(status.PendingSlot)}, " +
                               $"attempts={status.AttemptsLeft}, seq={status.Sequence}");
             Console.WriteLine($"active CRC=0x{status.ActiveCrc32:X8}, pending CRC=0x{status.PendingCrc32:X8}");
+            Console.WriteLine($"内部Formal固件有效: {status.InternalValid}");
             if (security != null)
             {
                 Console.WriteLine($"安全版本下限={security.MinimumVersion}, " +

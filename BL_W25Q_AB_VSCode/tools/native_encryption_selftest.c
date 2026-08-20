@@ -37,7 +37,6 @@ static int load_file(const char *path, uint8_t **data, size_t *size)
 
 static int decrypt_image(const uint8_t *xbin, size_t xbin_size,
                          const magic_header_t *header,
-                         const xbin_encryption_header_t *encryption,
                          uint8_t *plaintext, size_t *plaintext_size)
 {
     uint8_t buffer[STREAM_CHUNK_SIZE + 16u];
@@ -46,7 +45,7 @@ static int decrypt_image(const uint8_t *xbin, size_t xbin_size,
     size_t output_offset = 0;
 
     if (input_offset + header->data_length != xbin_size ||
-        !firmware_decryption_begin(&context, header, encryption))
+        !firmware_decryption_begin(&context, header))
         return 0;
 
     while (input_offset < xbin_size)
@@ -70,7 +69,7 @@ static int decrypt_image(const uint8_t *xbin, size_t xbin_size,
 
     {
         size_t output_length;
-        if (!firmware_decryption_finish(&context, encryption, buffer,
+        if (!firmware_decryption_finish(&context, header, buffer,
                                         sizeof(buffer), &output_length))
             return 0;
         memcpy(plaintext + output_offset, buffer, output_length);
@@ -89,7 +88,6 @@ int main(int argc, char **argv)
     size_t application_size;
     size_t plaintext_size;
     magic_header_t header;
-    xbin_encryption_header_t encryption;
     int result = 1;
 
     if (argc != 3 || !load_file(argv[1], &xbin, &xbin_size) ||
@@ -101,13 +99,11 @@ int main(int argc, char **argv)
         return 2;
     }
     memcpy(&header, xbin, sizeof(header));
-    memcpy(&encryption, xbin + XBIN_ENCRYPTION_HEADER_OFFSET,
-           sizeof(encryption));
     plaintext = malloc(application_size + 16u);
     if (plaintext == NULL)
         goto out;
 
-    if (!decrypt_image(xbin, xbin_size, &header, &encryption,
+    if (!decrypt_image(xbin, xbin_size, &header,
                        plaintext, &plaintext_size) ||
         plaintext_size != application_size ||
         memcmp(plaintext, application, application_size) != 0)
@@ -116,8 +112,8 @@ int main(int argc, char **argv)
         goto out;
     }
 
-    encryption.tag[0] ^= 1u;
-    if (decrypt_image(xbin, xbin_size, &header, &encryption,
+    header.encryption_tag[0] ^= 1u;
+    if (decrypt_image(xbin, xbin_size, &header,
                       plaintext, &plaintext_size))
     {
         fprintf(stderr, "Bootloader streaming AES-GCM accepted a modified tag\n");

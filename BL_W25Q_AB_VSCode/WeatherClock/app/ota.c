@@ -24,7 +24,6 @@
 #include "crc32.h"
 #include "esp_at.h"
 #include "firmware_release_policy.h"
-#include "firmware_encryption_format.h"
 #include "firmware_security_policy.h"
 #include "magic_header.h"
 #include "ota.h"
@@ -55,7 +54,6 @@ typedef struct
     uint32_t xbin_size;
     uint8_t xbin_sha256[SHA256_DIGEST_SIZE];
     magic_header_t header;
-    xbin_encryption_header_t encryption;
 } ota_candidate_t;
 
 static TaskHandle_t ota_task_handle;
@@ -93,7 +91,7 @@ static bool install_request_matches(const ota_candidate_t *candidate,
 
     return request.target_slot == target_slot &&
            request.xbin_size == candidate->xbin_size &&
-           request.header_crc32 == candidate->header.this_crc32 &&
+           request.header_crc32 == candidate->header.header_crc32 &&
            request.payload_crc32 == candidate->header.data_crc32 &&
            request.security_version == candidate->header.security_version &&
            memcmp(request.image_sha256, candidate->header.image_sha256,
@@ -198,19 +196,25 @@ static bool json_hex(const char *json, const char *key,
 /**
  * @brief 解析定位 XBIN 所需的最小清单字段。
  *
- * 清单仍保留版本、发布序号和摘要等可读元数据，以兼容已经发布的旧客户端；
- * 新客户端只信任随后下载的 XBIN Header，避免同一信息存在两份运行时来源。
+ * 清单保留版本、发布序号和摘要等可读元数据，但运行时只信任随后下载的
+ * Formal Header，避免同一信息存在两份安全决策来源。
  */
 static bool manifest_parse(const char *json, ota_candidate_t *candidate)
 {
     char product[32];
+    char format[16];
     uint32_t manifest_version;
+    uint32_t format_revision;
 
     memset(candidate, 0, sizeof(*candidate));
     if (!json_u32(json, "manifest_version", &manifest_version) ||
-        manifest_version != 1u ||
+        manifest_version != 2u ||
         !json_string(json, "product", product, sizeof(product)) ||
         strcmp(product, OTA_PRODUCT) != 0 ||
+        !json_string(json, "xbin_format", format, sizeof(format)) ||
+        strcmp(format, "formal") != 0 ||
+        !json_u32(json, "format_revision", &format_revision) ||
+        format_revision != MAGIC_HEADER_FORMAT_FORMAL ||
         !json_u32(json, "xbin_size", &candidate->xbin_size) ||
         !json_hex(json, "xbin_sha256", candidate->xbin_sha256,
                   sizeof(candidate->xbin_sha256)) ||
@@ -260,10 +264,10 @@ static bool download_manifest(void)
     return ok;
 }
 
-/** @brief 用 Range 请求读取签名 Header 和紧随其后的可选加密描述。 */
+/** @brief 用Range请求读取完整的320字节Formal Header。 */
 static bool download_candidate_header(ota_candidate_t *candidate)
 {
-    uint8_t header_area[MAGIC_HEADER_SIZE + XBIN_ENCRYPTION_HEADER_SIZE];
+    uint8_t header_area[MAGIC_HEADER_SIZE];
     esp_http_info_t info;
     bool ok = false;
 
@@ -280,14 +284,9 @@ static bool download_candidate_header(ota_candidate_t *candidate)
         return false;
 
     memcpy(&candidate->header, header_area, sizeof(candidate->header));
-    memcpy(&candidate->encryption, header_area + MAGIC_HEADER_SIZE,
-           sizeof(candidate->encryption));
 
     if (!magic_header_validate_data(&candidate->header) ||
         memchr(candidate->header.version, '\0', MAGIC_VERSION_SIZE) == NULL)
-        return false;
-    if (candidate->encryption.magic == XBIN_ENCRYPTION_MAGIC &&
-        !magic_encryption_header_validate(&candidate->encryption))
         return false;
     return candidate->header.data_offset + candidate->header.data_length ==
            candidate->xbin_size;
@@ -505,39 +504,25 @@ out:
 }
 
 /**
- * @brief 重新扫描外部槽并验证完整 XBIN。
+ * @brief 重新扫描外部槽并验证完整XBIN的下载摘要。
  *
- * 明文 v2 继续在应用侧核对 payload CRC/SHA。加密 v3 的应用侧没有密钥，只核对
- * COS 清单记录的整包 SHA-256；明文摘要和 GCM Tag 由 Bootloader 独立验证。
+ * WeatherClock不持有AES密钥，只确认W25Q中的完整加密包与COS清单一致。
+ * ECDSA、GCM Tag以及明文CRC/SHA仍由Bootloader在复位后独立验证。
  */
 static bool verify_download(const ota_candidate_t *candidate,
                              uint8_t target_slot)
 {
     static const uint8_t zeros[256] = {0};
-    sha256_context_t payload_sha;
     sha256_context_t xbin_sha;
-    uint8_t payload_digest[SHA256_DIGEST_SIZE];
     uint8_t xbin_digest[SHA256_DIGEST_SIZE];
-    uint32_t crc = 0;
     uint32_t offset = MAGIC_HEADER_AREA_SIZE;
     uint32_t i;
-    bool crc_ok;
-    bool payload_header_ok;
     bool xbin_ok;
-    bool encrypted = candidate->encryption.magic == XBIN_ENCRYPTION_MAGIC;
 
-    if (!encrypted)
-    {
-        crc = crc32_begin();
-        sha256_init(&payload_sha);
-    }
     sha256_init(&xbin_sha);
     sha256_update(&xbin_sha, (const uint8_t *)&candidate->header,
                   sizeof(candidate->header));
-    sha256_update(&xbin_sha, (const uint8_t *)&candidate->encryption,
-                  sizeof(candidate->encryption));
-    for (i = MAGIC_HEADER_SIZE + XBIN_ENCRYPTION_HEADER_SIZE;
-         i < MAGIC_HEADER_AREA_SIZE; i += sizeof(zeros))
+    for (i = MAGIC_HEADER_SIZE; i < MAGIC_HEADER_AREA_SIZE; i += sizeof(zeros))
     {
         uint32_t chunk = MAGIC_HEADER_AREA_SIZE - i;
         if (chunk > sizeof(zeros))
@@ -552,36 +537,15 @@ static bool verify_download(const ota_candidate_t *candidate,
         if (chunk > sizeof(stream_buffer))
             chunk = sizeof(stream_buffer);
         w25q_read((w25q_chip_t)target_slot, offset, stream_buffer, chunk);
-        if (!encrypted)
-        {
-            crc = crc32_update(crc, stream_buffer, chunk);
-            sha256_update(&payload_sha, stream_buffer, chunk);
-        }
         sha256_update(&xbin_sha, stream_buffer, chunk);
         offset += chunk;
     }
-    if (!encrypted)
-    {
-        crc = crc32_end(crc);
-        sha256_final(&payload_sha, payload_digest);
-    }
     sha256_final(&xbin_sha, xbin_digest);
 
-    crc_ok = encrypted || crc == candidate->header.data_crc32;
-    payload_header_ok = encrypted ||
-        memcmp(payload_digest, candidate->header.image_sha256,
-               sizeof(payload_digest)) == 0;
     xbin_ok = memcmp(xbin_digest, candidate->xbin_sha256,
                      sizeof(xbin_digest)) == 0;
-    if (encrypted)
-        printf("[OTA] verify encrypted payload=deferred, xbin=%s\n",
-               xbin_ok ? "ok" : "bad");
-    else
-        printf("[OTA] verify CRC=%s (got %08lX), payload=%s, xbin=%s\n",
-               crc_ok ? "ok" : "bad", (unsigned long)crc,
-               payload_header_ok ? "ok" : "bad",
-               xbin_ok ? "ok" : "bad");
-    return crc_ok && payload_header_ok && xbin_ok;
+    printf("[OTA] verify encrypted XBIN=%s\n", xbin_ok ? "ok" : "bad");
+    return xbin_ok;
 }
 
 /** @brief 最后写 Header，使外部槽从“半成品”一次变为有效候选。 */
@@ -590,12 +554,10 @@ static bool commit_header(const ota_candidate_t *candidate,
 {
     static const uint8_t zeros[256] = {0};
     magic_header_t verify_header;
-    xbin_encryption_header_t verify_encryption;
     uint32_t offset;
 
-    /* XBIN Header区的填充先写，真正有效的前256字节始终最后提交。 */
-    for (offset = MAGIC_HEADER_SIZE + XBIN_ENCRYPTION_HEADER_SIZE;
-         offset < MAGIC_HEADER_AREA_SIZE;
+    /* Header区的填充先写，真正有效的320字节Formal Header始终最后提交。 */
+    for (offset = MAGIC_HEADER_SIZE; offset < MAGIC_HEADER_AREA_SIZE;
          offset += sizeof(zeros))
     {
         uint32_t chunk = MAGIC_HEADER_AREA_SIZE - offset;
@@ -605,23 +567,14 @@ static bool commit_header(const ota_candidate_t *candidate,
                           chunk))
             return false;
     }
-    if (!w25q_program((w25q_chip_t)target_slot,
-                       XBIN_ENCRYPTION_HEADER_OFFSET,
-                       (const uint8_t *)&candidate->encryption,
-                       sizeof(candidate->encryption)))
-        return false;
     if (!w25q_program((w25q_chip_t)target_slot, 0u,
                       (const uint8_t *)&candidate->header,
                       sizeof(candidate->header)))
         return false;
     w25q_read((w25q_chip_t)target_slot, 0u,
               (uint8_t *)&verify_header, sizeof(verify_header));
-    w25q_read((w25q_chip_t)target_slot, XBIN_ENCRYPTION_HEADER_OFFSET,
-              (uint8_t *)&verify_encryption, sizeof(verify_encryption));
     return memcmp(&verify_header, &candidate->header,
-                  sizeof(verify_header)) == 0 &&
-           memcmp(&verify_encryption, &candidate->encryption,
-                  sizeof(verify_encryption)) == 0;
+                  sizeof(verify_header)) == 0;
 }
 
 /** @brief 写入一次性请求；此后只有 Bootloader 能决定是否安装。 */
@@ -635,7 +588,7 @@ static bool request_install(const ota_candidate_t *candidate,
     request.magic = OTA_REQUEST_MAGIC;
     request.target_slot = target_slot;
     request.xbin_size = candidate->xbin_size;
-    request.header_crc32 = candidate->header.this_crc32;
+    request.header_crc32 = candidate->header.header_crc32;
     request.payload_crc32 = candidate->header.data_crc32;
     request.security_version = candidate->header.security_version;
     memcpy(request.image_sha256, candidate->header.image_sha256,

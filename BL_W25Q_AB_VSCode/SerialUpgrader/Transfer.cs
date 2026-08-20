@@ -36,6 +36,7 @@ public sealed class BootStatus
     public uint Sequence { get; init; }
     public uint ActiveCrc32 { get; init; }
     public uint PendingCrc32 { get; init; }
+    public bool InternalValid { get; init; }
     public FirmwareSlotInfo[] Slots { get; init; } = [];
 }
 
@@ -75,14 +76,7 @@ public sealed class Transfer : IDisposable
     
     // 超时配置常数
     private const int DEFAULT_TIMEOUT_SECONDS = 1;
-    private const int ERASE_TIMEOUT_SECONDS = 10;
-    private const int PROGRAM_TIMEOUT_SECONDS = 10;
-    private const int VERIFY_TIMEOUT_SECONDS = 10;
-    
     // 参数长度常数
-    private const int ADDR_SIZE_PARAM_LENGTH = 8;  // uint addr + uint size
-    private const int ADDR_SIZE_CRC_PARAM_LENGTH = 12;  // uint addr + uint size + uint crc
-    private const int PROGRAM_PARAM_HEADER_SIZE = 8;  // uint addr + uint size
     private const int W25_PROGRAM_PARAM_HEADER_SIZE = 7;
     private const int W25_PROGRAM_DATA_MAX = 8192;
     private const int RESUME_BLOCK_SIZE = 4096;
@@ -107,9 +101,6 @@ public sealed class Transfer : IDisposable
     {
         INQUERY = 0x01,
         SET_BAUD = 0x02,
-        ERASE = 0x81,
-        PROGRAM = 0x82,
-        VERIFY = 0x83,
         RESET = 0x21,
         BOOT = 0x22,
         W25_READ = 0x41,
@@ -118,7 +109,6 @@ public sealed class Transfer : IDisposable
         W25_PROGRAM_ASYNC = 0x44,
         SLOT_STATUS = 0x50,
         SLOT_ACTIVATE = 0x52,
-        SLOT_SNAPSHOT = 0x53,
         SLOT_STATUS_FAST = 0x54,
         SECURITY_STATUS = 0x55,
         SLOT_RESUME_SCAN = 0x56,
@@ -466,64 +456,6 @@ public sealed class Transfer : IDisposable
         return true;
     }
 
-    /// <summary>旧协议内部Flash擦除命令，仅用于兼容和维护。</summary>
-    public async Task<bool> Erase(uint addr, uint size)
-    {
-        byte[] param = new byte[ADDR_SIZE_PARAM_LENGTH];
-        BitConverter.GetBytes(addr).CopyTo(param, 0);
-        BitConverter.GetBytes(size).CopyTo(param, 4);
-
-        Response? response = await PacketRequest(OPCODE.ERASE, param, TimeSpan.FromSeconds(ERASE_TIMEOUT_SECONDS));
-
-        if (response != null && response.Errcode == ERRCODE.OK)
-        {
-            return true;
-        }
-
-        return false;
-    }
-
-    /// <summary>旧协议内部Flash编程命令，仅用于兼容和维护。</summary>
-    public async Task<bool> Program(uint addr, byte[] data, int mtu)
-    {
-        int offset = 0;
-        while (offset < data.Length)
-        {
-            int chunk_size = Math.Min(mtu - PROGRAM_PARAM_HEADER_SIZE, data.Length - offset);
-            OnProgress?.Invoke((double)offset / data.Length * 100.0);
-            OnEvent?.Invoke($"Program addr:0x{addr:X8} size:{chunk_size} {offset}/{data.Length}");
-            byte[] param = new byte[PROGRAM_PARAM_HEADER_SIZE + chunk_size];
-            BitConverter.GetBytes(addr).CopyTo(param, 0);
-            BitConverter.GetBytes((uint)chunk_size).CopyTo(param, 4);
-
-            Array.Copy(data, offset, param, PROGRAM_PARAM_HEADER_SIZE, chunk_size);
-            Response? response = await PacketRequest(OPCODE.PROGRAM, param, TimeSpan.FromSeconds(PROGRAM_TIMEOUT_SECONDS));
-            if (response == null || response.Errcode != ERRCODE.OK)
-            {
-                return false;
-            }
-            addr += (uint)chunk_size;
-            offset += chunk_size;
-        }
-
-        return true;
-    }
-
-    /// <summary>旧协议内部Flash CRC32校验命令，仅用于兼容和维护。</summary>
-    public async Task<bool> Verify(uint addr, uint size, uint crc)
-    {
-        byte[] param = new byte[ADDR_SIZE_CRC_PARAM_LENGTH];
-        BitConverter.GetBytes(addr).CopyTo(param, 0);
-        BitConverter.GetBytes(size).CopyTo(param, 4);
-        BitConverter.GetBytes(crc).CopyTo(param, 8);
-        Response? response = await PacketRequest(OPCODE.VERIFY, param, TimeSpan.FromSeconds(VERIFY_TIMEOUT_SECONDS));
-        if (response != null && response.Errcode == ERRCODE.OK)
-        {
-            return true;
-        }
-        return false;
-    }
-
     /// <summary>
     /// 使用一次最小的W25Q只读请求探测工程维护接口是否开放。
     /// true表示允许，false表示Bootloader明确返回DENIED，null表示链路或协议异常。
@@ -550,7 +482,7 @@ public sealed class Transfer : IDisposable
     {
         Response? response = await PacketRequest(OPCODE.SLOT_STATUS, null, TimeSpan.FromSeconds(15));
         byte[]? data = response?.Param;
-        if (response?.Errcode != ERRCODE.OK || data == null || data.Length != 101)
+        if (response?.Errcode != ERRCODE.OK || data == null || data.Length != 102)
             return null;
 
         FirmwareSlotInfo[] slots = new FirmwareSlotInfo[2];
@@ -577,6 +509,7 @@ public sealed class Transfer : IDisposable
             Sequence = BitConverter.ToUInt32(data, 5),
             ActiveCrc32 = BitConverter.ToUInt32(data, 9),
             PendingCrc32 = BitConverter.ToUInt32(data, 13),
+            InternalValid = data[101] != 0,
             Slots = slots
         };
     }
@@ -744,14 +677,6 @@ public sealed class Transfer : IDisposable
         return true;
     }
 
-    async Task<bool> SnapshotCurrentApplication(byte slot)
-    {
-        OnEvent?.Invoke($"首次使用，正在把当前内部固件备份到 Slot {(char)('A' + slot)}");
-        Response? response = await PacketRequest(OPCODE.SLOT_SNAPSHOT, [slot],
-                                                 TimeSpan.FromSeconds(30));
-        return response?.Errcode == ERRCODE.OK;
-    }
-
     async Task<bool> ActivateSlot(byte slot, uint expectedDataCrc)
     {
         byte[] param = new byte[5];
@@ -760,14 +685,6 @@ public sealed class Transfer : IDisposable
 
         Response? response = await PacketRequest(OPCODE.SLOT_ACTIVATE, param,
                                                  TimeSpan.FromSeconds(15));
-
-        /* v1.3及更早版本只接受1字节槽号，保留一次兼容回退。 */
-        if (response?.Errcode == ERRCODE.PARAM)
-        {
-            OnEvent?.Invoke("旧版Bootloader不支持期望CRC参数，使用兼容激活格式");
-            response = await PacketRequest(OPCODE.SLOT_ACTIVATE, [slot],
-                                           TimeSpan.FromSeconds(15));
-        }
         if (response?.Errcode == ERRCODE.DENIED)
             OnEvent?.Invoke("Bootloader拒绝安装：固件安全版本低于设备下限，需使用新签名回退包或KEY2授权");
         return response?.Errcode == ERRCODE.OK;
@@ -777,7 +694,7 @@ public sealed class Transfer : IDisposable
     /// 把XBIN写入非活动槽，完成签名校验后提交为InstallPending。
     ///
     /// 默认先使用4 KiB分块CRC查找已经落盘的连续前缀，只擦写首个不一致块
-    /// 之后的区域。旧Bootloader不支持扫描Opcode时自动执行原有全量流程。
+    /// 之后的区域。Formal Bootloader必须支持该命令，不再回退旧协议。
     /// 无论采用哪条路径，Header都最后写入，提交前不会改写内部应用或活动槽。
     /// </summary>
     /// <param name="forceFull">true时跳过断点扫描并完整擦写目标槽。</param>
@@ -795,19 +712,9 @@ public sealed class Transfer : IDisposable
             return false;
         }
 
-        if (!status.StateFound)
+        if (!status.StateFound || status.ActiveSlot >= 2)
         {
-            if (!await SnapshotCurrentApplication(0))
-            {
-                OnEvent?.Invoke("当前固件快照失败");
-                return false;
-            }
-            status = await GetUpgradeBootStatus();
-        }
-
-        if (status == null || status.ActiveSlot >= 2)
-        {
-            OnEvent?.Invoke("没有可用的已确认活动槽");
+            OnEvent?.Invoke("A/B尚未初始化：请先预置与内部Formal固件匹配的外部槽并重启采用");
             return false;
         }
 
@@ -829,7 +736,8 @@ public sealed class Transfer : IDisposable
             ResumeScanResult scan = await ScanResumeOffset(target, xbin, header);
             if (!scan.Supported)
             {
-                OnEvent?.Invoke("Bootloader不支持断点扫描，回退到兼容的完整升级");
+                OnEvent?.Invoke("当前Bootloader不是Formal协议，拒绝使用旧升级路径");
+                return false;
             }
             else if (!scan.Success)
             {
@@ -855,10 +763,11 @@ public sealed class Transfer : IDisposable
             if (!await W25Erase(target, 0, eraseSize))
                 return false;
 
-            /* 兼容旧Bootloader：保持原有布局传输，Header仍在最后提交。 */
-            byte[] body = xbin[256..];
-            if (!await W25Program(target, 256, body, mtu, 0, xbin.Length) ||
-                !await W25Program(target, 0, xbin[..256], mtu,
+            int headerCommitSize = header.HeaderCommitSize;
+            byte[] body = xbin[headerCommitSize..];
+            if (!await W25Program(target, (uint)headerCommitSize, body, mtu,
+                                  0, xbin.Length) ||
+                !await W25Program(target, 0, xbin[..headerCommitSize], mtu,
                                   body.Length, xbin.Length))
                 return false;
         }
