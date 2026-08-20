@@ -6,8 +6,8 @@
  * 安全漏洞形成的永久防降级下限仍由`security_version`独立负责。
  */
 
-#ifndef __FIRMWARE_RELEASE_POLICY_H__
-#define __FIRMWARE_RELEASE_POLICY_H__
+#ifndef CLOCK_F407_FIRMWARE_RELEASE_POLICY_H
+#define CLOCK_F407_FIRMWARE_RELEASE_POLICY_H
 
 #include <stdint.h>
 #include <string.h>
@@ -29,6 +29,9 @@ typedef enum
  * @param[in] candidate_sequence 候选固件的发布序号。
  * @param[in] candidate_sha256 候选固件数据区的 SHA-256。
  * @return 自动 OTA 应采取的处理方式。
+ *
+ * 相同序号只有在摘要也相同时才表示“已经是当前版本”。相同序号却携带不同
+ * 摘要属于发布冲突，不能依靠版本字符串猜测哪一个更新。
  */
 static inline firmware_release_decision_t firmware_release_decide(
     uint32_t current_sequence,
@@ -45,4 +48,4 @@ static inline firmware_release_decision_t firmware_release_decide(
                : FIRMWARE_RELEASE_CONFLICT;
 }
 
-#endif /* __FIRMWARE_RELEASE_POLICY_H__ */
+#endif /* CLOCK_F407_FIRMWARE_RELEASE_POLICY_H */

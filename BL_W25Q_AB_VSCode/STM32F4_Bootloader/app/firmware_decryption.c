@@ -3,10 +3,12 @@
  * @brief 使用Mbed TLS实现XBIN Formal的AES-256-GCM流式解密。
  */
 
+#include "firmware_decryption.h"
+
 #include <string.h>
+
 #include "mbedtls/constant_time.h"
 #include "firmware_encryption_key.h"
-#include "firmware_decryption.h"
 
 bool firmware_decryption_begin(firmware_decryption_t *context,
                                const magic_header_t *header)
@@ -52,12 +54,13 @@ bool firmware_decryption_finish(firmware_decryption_t *context,
                                 size_t *output_length)
 {
     uint8_t tag[MAGIC_ENCRYPTION_TAG_SIZE];
-    bool ok = mbedtls_gcm_finish(&context->gcm, output, output_size,
-                                 output_length, tag, sizeof(tag)) == 0 &&
-              mbedtls_ct_memcmp(tag, header->encryption_tag, sizeof(tag)) == 0;
+    bool authenticated =
+        mbedtls_gcm_finish(&context->gcm, output, output_size,
+                           output_length, tag, sizeof(tag)) == 0 &&
+        mbedtls_ct_memcmp(tag, header->encryption_tag, sizeof(tag)) == 0;
 
     mbedtls_gcm_free(&context->gcm);
-    return ok;
+    return authenticated;
 }
 
 void firmware_decryption_abort(firmware_decryption_t *context)

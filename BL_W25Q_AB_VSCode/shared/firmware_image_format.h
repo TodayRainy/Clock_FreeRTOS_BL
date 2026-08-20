@@ -10,31 +10,40 @@
  * 0x08010000，因此本次格式收口不会改变Bootloader或应用的链接布局。
  */
 
-#ifndef __FIRMWARE_IMAGE_FORMAT_H__
-#define __FIRMWARE_IMAGE_FORMAT_H__
+#ifndef CLOCK_F407_FIRMWARE_IMAGE_FORMAT_H
+#define CLOCK_F407_FIRMWARE_IMAGE_FORMAT_H
 
 #include <stddef.h>
 #include <stdint.h>
 
-#define MAGIC_HEADER_MAGIC             0x4D524F46u /**< 小端内存中为"FORM"。 */
-#define MAGIC_HEADER_FORMAT_FORMAL     1u
-#define MAGIC_HEADER_ADDR              0x0800C000u
-#define MAGIC_HEADER_SIZE              320u
-#define MAGIC_HEADER_AREA_SIZE         4096u
-#define MAGIC_DATA_ADDRESS             0x08010000u
-#define MAGIC_DATA_MAX_SIZE            0x00070000u
-#define MAGIC_HEADER_TYPE_APP          1u
+/** @name Formal 固件布局 */
+/** @{ */
+#define MAGIC_HEADER_MAGIC             0x4D524F46u /**< 小端内存中为 "FORM"。 */
+#define MAGIC_HEADER_FORMAT_FORMAL     1u          /**< 当前 Header 格式修订号。 */
+#define MAGIC_HEADER_ADDR              0x0800C000u /**< 内部 Flash Header 地址。 */
+#define MAGIC_HEADER_SIZE              320u        /**< Header 实际字节数。 */
+#define MAGIC_HEADER_AREA_SIZE         4096u       /**< Header 预留区域大小。 */
+#define MAGIC_DATA_ADDRESS             0x08010000u /**< 内部应用起始地址。 */
+#define MAGIC_DATA_MAX_SIZE            0x00070000u /**< 内部应用最大长度。 */
+#define MAGIC_HEADER_TYPE_APP          1u          /**< 可启动应用镜像。 */
+/** @} */
 
+/** @name Formal 必选算法标识 */
+/** @{ */
 #define MAGIC_HASH_SHA256              1u
 #define MAGIC_SIGNATURE_ECDSA_P256_SHA256 1u
 #define MAGIC_ENCRYPTION_AES_256_GCM   1u
+/** @} */
 
+/** @name 固定长度字段 */
+/** @{ */
 #define MAGIC_SHA256_SIZE              32u
 #define MAGIC_ENCRYPTION_KEY_SIZE      32u
 #define MAGIC_ENCRYPTION_NONCE_SIZE    12u
 #define MAGIC_ENCRYPTION_TAG_SIZE      16u
 #define MAGIC_SIGNATURE_SIZE           64u
 #define MAGIC_VERSION_SIZE             64u
+/** @} */
 
 /**
  * @brief XBIN Formal revision 1的统一320字节Header。
@@ -49,29 +58,29 @@
  */
 typedef struct
 {
-    uint32_t magic;
-    uint32_t format_revision;
-    uint32_t header_size;
-    uint32_t data_type;
-    uint32_t data_offset;
-    uint32_t data_address;
-    uint32_t data_length;
-    uint32_t data_crc32;
+    uint32_t magic;             /**< 固定为 @ref MAGIC_HEADER_MAGIC。 */
+    uint32_t format_revision;   /**< 固定为 @ref MAGIC_HEADER_FORMAT_FORMAL。 */
+    uint32_t header_size;       /**< 固定为 @ref MAGIC_HEADER_SIZE。 */
+    uint32_t data_type;         /**< 当前仅支持 @ref MAGIC_HEADER_TYPE_APP。 */
+    uint32_t data_offset;       /**< XBIN 中密文相对文件起始位置。 */
+    uint32_t data_address;      /**< 安装后明文应用的内部 Flash 地址。 */
+    uint32_t data_length;       /**< 密文长度，也是解密后的应用长度。 */
+    uint32_t data_crc32;        /**< 明文应用的 CRC32。 */
     uint32_t security_version; /**< 安全修复形成的单调防降级下限。 */
     uint32_t release_sequence; /**< 普通发布顺序；自动OTA只接受更大的值。 */
-    uint32_t hash_algorithm;
-    uint32_t signature_algorithm;
-    uint32_t encryption_algorithm;
-    uint32_t signing_key_id;
-    uint32_t encryption_key_id;
-    uint32_t reserved0;
-    uint8_t image_sha256[MAGIC_SHA256_SIZE];
-    uint8_t encryption_nonce[MAGIC_ENCRYPTION_NONCE_SIZE];
-    uint8_t encryption_tag[MAGIC_ENCRYPTION_TAG_SIZE];
-    char version[MAGIC_VERSION_SIZE];
-    uint8_t signature[MAGIC_SIGNATURE_SIZE];
-    uint32_t reserved[16];
-    uint32_t header_crc32;
+    uint32_t hash_algorithm;    /**< 明文摘要算法标识。 */
+    uint32_t signature_algorithm; /**< Header 签名算法标识。 */
+    uint32_t encryption_algorithm; /**< 外部正文加密算法标识。 */
+    uint32_t signing_key_id;    /**< Bootloader 公钥选择标识。 */
+    uint32_t encryption_key_id; /**< Bootloader AES 密钥选择标识。 */
+    uint32_t reserved0;         /**< 必须为 0。 */
+    uint8_t image_sha256[MAGIC_SHA256_SIZE]; /**< 明文应用 SHA-256。 */
+    uint8_t encryption_nonce[MAGIC_ENCRYPTION_NONCE_SIZE]; /**< GCM Nonce。 */
+    uint8_t encryption_tag[MAGIC_ENCRYPTION_TAG_SIZE]; /**< GCM 认证 Tag。 */
+    char version[MAGIC_VERSION_SIZE]; /**< 以 NUL 结尾的显示版本。 */
+    uint8_t signature[MAGIC_SIGNATURE_SIZE]; /**< ECDSA r||s 原始签名。 */
+    uint32_t reserved[16];      /**< 必须全部为 0。 */
+    uint32_t header_crc32;      /**< 前 316 字节的 CRC32。 */
 } magic_header_t;
 
 /* Python和C#按固定偏移访问；在编译期锁住跨语言二进制契约。 */
@@ -96,4 +105,4 @@ _Static_assert(offsetof(magic_header_t, signature) == 188u,
 _Static_assert(offsetof(magic_header_t, header_crc32) == 316u,
                "Header CRC moved");
 
-#endif /* __FIRMWARE_IMAGE_FORMAT_H__ */
+#endif /* CLOCK_F407_FIRMWARE_IMAGE_FORMAT_H */

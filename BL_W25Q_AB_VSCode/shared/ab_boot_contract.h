@@ -7,8 +7,8 @@
  * 这些字段的顺序、大小和地址一旦改变，就会造成已保存状态不兼容。
  */
 
-#ifndef __AB_BOOT_CONTRACT_H__
-#define __AB_BOOT_CONTRACT_H__
+#ifndef CLOCK_F407_AB_BOOT_CONTRACT_H
+#define CLOCK_F407_AB_BOOT_CONTRACT_H
 
 #include <stdint.h>
 
@@ -60,4 +60,4 @@ typedef struct
 typedef char boot_state_record_must_be_128_bytes[
     (sizeof(boot_state_t) == BOOT_STATE_RECORD_SIZE) ? 1 : -1];
 
-#endif /* __AB_BOOT_CONTRACT_H__ */
+#endif /* CLOCK_F407_AB_BOOT_CONTRACT_H */

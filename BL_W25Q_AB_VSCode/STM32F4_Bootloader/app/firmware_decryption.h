@@ -3,8 +3,8 @@
  * @brief XBIN Formal AES-256-GCM流式解密接口。
  */
 
-#ifndef __FIRMWARE_DECRYPTION_H__
-#define __FIRMWARE_DECRYPTION_H__
+#ifndef CLOCK_F407_FIRMWARE_DECRYPTION_H
+#define CLOCK_F407_FIRMWARE_DECRYPTION_H
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -12,6 +12,7 @@
 #include "mbedtls/gcm.h"
 #include "firmware_image_format.h"
 
+/** @brief 一次流式 AES-256-GCM 解密的 Mbed TLS 上下文。 */
 typedef struct
 {
     mbedtls_gcm_context gcm;
@@ -56,4 +57,4 @@ bool firmware_decryption_finish(firmware_decryption_t *context,
 /** @brief 放弃一次未完成的解密并清除上下文。 */
 void firmware_decryption_abort(firmware_decryption_t *context);
 
-#endif /* __FIRMWARE_DECRYPTION_H__ */
+#endif /* CLOCK_F407_FIRMWARE_DECRYPTION_H */

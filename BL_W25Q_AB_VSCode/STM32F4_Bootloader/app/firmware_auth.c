@@ -6,12 +6,14 @@
  * 项目的签名对象和公钥选择，不再增加通用密码框架。
  */
 
+#include "firmware_auth.h"
+
 #include <stddef.h>
 #include <string.h>
+
 #include "sha256.h"
 #include "uECC.h"
 #include "firmware_public_key.h"
-#include "firmware_auth.h"
 
 /* 固定域分隔符避免同一把密钥在其他数据格式中的签名被误当作固件签名。 */
 static const uint8_t signature_domain[] = "ClockFW-XBIN-Formal-r1";
@@ -26,9 +28,9 @@ static void signature_digest(const magic_header_t *header,
     static const uint8_t zero_crc32[sizeof(uint32_t)] = { 0 };
     const uint8_t *bytes = (const uint8_t *)header;
     sha256_context_t context;
-    size_t signature_offset = offsetof(magic_header_t, signature);
-    size_t after_signature = signature_offset + MAGIC_SIGNATURE_SIZE;
-    size_t crc_offset = offsetof(magic_header_t, header_crc32);
+    const size_t signature_offset = offsetof(magic_header_t, signature);
+    const size_t after_signature = signature_offset + MAGIC_SIGNATURE_SIZE;
+    const size_t crc_offset = offsetof(magic_header_t, header_crc32);
 
     sha256_init(&context);
     sha256_update(&context, signature_domain, sizeof(signature_domain) - 1u);

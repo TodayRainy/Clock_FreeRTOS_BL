@@ -8,8 +8,8 @@
  * Bootloader仍会独立完成签名、摘要和防降级检查。
  */
 
-#ifndef __OTA_CONTRACT_H__
-#define __OTA_CONTRACT_H__
+#ifndef CLOCK_F407_OTA_CONTRACT_H
+#define CLOCK_F407_OTA_CONTRACT_H
 
 #include <stdint.h>
 
@@ -28,15 +28,15 @@
  */
 typedef struct
 {
-    uint32_t magic;
-    uint8_t target_slot;
-    uint8_t reserved0[3];
-    uint32_t xbin_size;
-    uint32_t next_offset;
-    uint32_t security_version;
-    uint8_t xbin_sha256[32];
-    uint8_t reserved[72];
-    uint32_t record_crc32;
+    uint32_t magic;             /**< 固定为 @ref OTA_PROGRESS_MAGIC。 */
+    uint8_t target_slot;        /**< 正在下载的非活动槽。 */
+    uint8_t reserved0[3];       /**< 必须为 0。 */
+    uint32_t xbin_size;         /**< 完整 XBIN 字节数。 */
+    uint32_t next_offset;       /**< 下次从 XBIN 的这个偏移继续。 */
+    uint32_t security_version;  /**< 候选固件安全版本。 */
+    uint8_t xbin_sha256[32];    /**< 完整加密 XBIN 的 SHA-256。 */
+    uint8_t reserved[72];       /**< 保留空间，写入时清零。 */
+    uint32_t record_crc32;      /**< 本字段之前所有字节的 CRC32。 */
 } ota_progress_t;
 
 /**
@@ -47,16 +47,16 @@ typedef struct
  */
 typedef struct
 {
-    uint32_t magic;
-    uint8_t target_slot;
-    uint8_t reserved0[3];
-    uint32_t xbin_size;
-    uint32_t header_crc32;
-    uint32_t payload_crc32;
-    uint32_t security_version;
-    uint8_t image_sha256[32];
-    uint8_t reserved[68];
-    uint32_t record_crc32;
+    uint32_t magic;             /**< 固定为 @ref OTA_REQUEST_MAGIC。 */
+    uint8_t target_slot;        /**< 已完成下载的非活动槽。 */
+    uint8_t reserved0[3];       /**< 必须为 0。 */
+    uint32_t xbin_size;         /**< 候选 XBIN 总长度。 */
+    uint32_t header_crc32;      /**< 候选 Formal Header 的 CRC32。 */
+    uint32_t payload_crc32;     /**< 候选明文应用的 CRC32。 */
+    uint32_t security_version;  /**< 候选固件安全版本。 */
+    uint8_t image_sha256[32];   /**< 候选明文应用的 SHA-256。 */
+    uint8_t reserved[68];       /**< 保留空间，写入时清零。 */
+    uint32_t record_crc32;      /**< 本字段之前所有字节的 CRC32。 */
 } ota_request_t;
 
 typedef char ota_progress_record_must_be_128_bytes[
@@ -64,4 +64,4 @@ typedef char ota_progress_record_must_be_128_bytes[
 typedef char ota_request_record_must_be_128_bytes[
     (sizeof(ota_request_t) == OTA_RECORD_SIZE) ? 1 : -1];
 
-#endif /* __OTA_CONTRACT_H__ */
+#endif /* CLOCK_F407_OTA_CONTRACT_H */

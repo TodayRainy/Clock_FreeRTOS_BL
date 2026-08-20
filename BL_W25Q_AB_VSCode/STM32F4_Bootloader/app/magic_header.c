@@ -3,26 +3,28 @@
  * @brief XBIN Formal Header的格式、布局和CRC32校验实现。
  */
 
-#include <stdbool.h>
-#include <stdint.h>
+#include "magic_header.h"
+
 #include <string.h>
+
 #include "crc32.h"
 #include "utils.h"
-#include "magic_header.h"
 
 bool magic_header_validate_data(const magic_header_t *header)
 {
+    uint32_t calculated_crc32;
+    uint32_t index;
+
     if (header->magic != MAGIC_HEADER_MAGIC)
         return false;
 
-    uint32_t index;
-    uint32_t ccrc = crc32((const uint8_t *)header,
-                          offset_of(magic_header_t, header_crc32));
-
-    if (ccrc != header->header_crc32)
+    /* 先用低成本 CRC 排除传输损坏，再解释会影响擦写范围的字段。 */
+    calculated_crc32 = crc32((const uint8_t *)header,
+                             offset_of(magic_header_t, header_crc32));
+    if (calculated_crc32 != header->header_crc32)
         return false;
 
-    /* Formal只有这一种算法组合和地址布局，不再保留旧容器分支。 */
+    /* Formal 只有一种算法组合和地址布局，不保留旧容器兼容分支。 */
     if (header->format_revision != MAGIC_HEADER_FORMAT_FORMAL ||
         header->header_size != MAGIC_HEADER_SIZE ||
         header->data_type != MAGIC_HEADER_TYPE_APP ||
@@ -37,7 +39,9 @@ bool magic_header_validate_data(const magic_header_t *header)
         memchr(header->version, '\0', sizeof(header->version)) == NULL)
         return false;
 
-    for (index = 0; index < sizeof(header->reserved) / sizeof(header->reserved[0]);
+    /* 保留区必须为零，避免同一 revision 出现未定义的隐式扩展。 */
+    for (index = 0;
+         index < sizeof(header->reserved) / sizeof(header->reserved[0]);
          ++index)
     {
         if (header->reserved[index] != 0u)

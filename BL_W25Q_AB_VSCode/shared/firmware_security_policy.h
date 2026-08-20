@@ -6,8 +6,8 @@
  * 固件；KEY2 物理授权可以安装较低版本，但不会降低已经确认的安全下限。
  */
 
-#ifndef __FIRMWARE_SECURITY_POLICY_H__
-#define __FIRMWARE_SECURITY_POLICY_H__
+#ifndef CLOCK_F407_FIRMWARE_SECURITY_POLICY_H
+#define CLOCK_F407_FIRMWARE_SECURITY_POLICY_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -17,6 +17,7 @@
  * @param[in] minimum_version 当前设备已经确认的安全版本下限。
  * @param[in] candidate_version 候选 XBIN 中经过签名保护的安全版本。
  * @param[in] physical_override 是否通过 KEY2 明确授权人工降级。
+ * @return 允许把候选固件提交给 A/B 状态机时返回 true。
  */
 static inline bool firmware_security_version_allowed(uint32_t minimum_version,
                                                      uint32_t candidate_version,
@@ -29,6 +30,10 @@ static inline bool firmware_security_version_allowed(uint32_t minimum_version,
  * @brief Trial 成功时计算新的安全版本下限。
  *
  * 即使当前 Trial 是 KEY2 授权的低版本，已确认下限也只保持或提高，不会下降。
+ *
+ * @param[in] minimum_version 当前已经确认的安全版本下限。
+ * @param[in] confirmed_version 刚刚通过 Trial 的固件安全版本。
+ * @return 两者中较大的值。
  */
 static inline uint32_t firmware_security_floor_after_confirm(
     uint32_t minimum_version, uint32_t confirmed_version)
@@ -36,4 +41,4 @@ static inline uint32_t firmware_security_floor_after_confirm(
     return confirmed_version > minimum_version ? confirmed_version : minimum_version;
 }
 
-#endif /* __FIRMWARE_SECURITY_POLICY_H__ */
+#endif /* CLOCK_F407_FIRMWARE_SECURITY_POLICY_H */
