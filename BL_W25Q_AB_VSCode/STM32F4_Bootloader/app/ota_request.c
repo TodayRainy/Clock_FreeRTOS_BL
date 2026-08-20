@@ -14,8 +14,10 @@
 #include "bl24c512.h"
 #include "boot_state.h"
 #include "crc32.h"
+#include "firmware_release_policy.h"
 #include "firmware_security_policy.h"
 #include "firmware_slot.h"
+#include "magic_header.h"
 #include "ota_contract.h"
 #include "ota_request.h"
 
@@ -60,6 +62,8 @@ void ota_request_process(void)
     ota_request_t request;
     boot_state_t state;
     magic_header_t header;
+    const magic_header_t *current = (const magic_header_t *)MAGIC_HEADER_ADDR;
+    firmware_release_decision_t release_decision;
     uint32_t xbin_size;
 
     if (!bl24c512_read(OTA_REQUEST_ADDR, (uint8_t *)&request,
@@ -107,6 +111,29 @@ void ota_request_process(void)
         return;
     }
 
+    /*
+     * 这里只约束应用自动提交的 OTA 请求。KEY2/USART3 人工维护路径仍可在明确
+     * 授权后安装旧版本，不会因为普通发布序号而失去主动降级能力。
+     */
+    if (!magic_header_validate_data(current))
+    {
+        log_e("current firmware header is invalid");
+        request_clear();
+        return;
+    }
+    release_decision = firmware_release_decide(
+        current->release_sequence, current->image_sha256,
+        header.release_sequence, header.image_sha256);
+    if (release_decision != FIRMWARE_RELEASE_UPDATE)
+    {
+        log_w("OTA release rejected: current=%lu candidate=%lu decision=%u",
+              (unsigned long)current->release_sequence,
+              (unsigned long)header.release_sequence,
+              (unsigned int)release_decision);
+        request_clear();
+        return;
+    }
+
     state.phase = BOOT_PHASE_INSTALL_PENDING;
     state.pending_slot = request.target_slot;
     state.pending_crc32 = header.data_crc32;
@@ -119,7 +146,8 @@ void ota_request_process(void)
         return;
     }
 
-    log_i("OTA slot %u accepted, version=%s", request.target_slot,
-          header.version);
+    log_i("OTA slot %u accepted, version=%s release=%lu",
+          request.target_slot, header.version,
+          (unsigned long)header.release_sequence);
     request_clear();
 }

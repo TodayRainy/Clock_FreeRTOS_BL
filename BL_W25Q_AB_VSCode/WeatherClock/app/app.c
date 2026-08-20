@@ -11,6 +11,7 @@
 #include "esp_at.h"
 #include "weather.h"
 #include "page.h"
+#include "ota.h"
 #include "app.h"
 
 #define MILLISECONDS(x) (x)
@@ -20,25 +21,26 @@
 #define DAYS(x)          HOURS((x) * 24)
 
 #define TIME_SYNC_INTERVAL          HOURS(1)
-#define WIFI_UPDATE_INTERVAL        SECONDS(5)
 #define TIME_UPDATE_INTERVAL        SECONDS(1)
 #define INNER_UPDATE_INTERVAL       SECONDS(3)
 #define OUTDOOR_UPDATE_INTERVAL     MINUTES(1)
 
-#define MLOOP_EVT_TIME_SYNC         (1 << 0)
-#define MLOOP_EVT_WIFI_UPDATE       (1 << 1)
-#define MLOOP_EVT_INNER_UPDATE      (1 << 2)
-#define MLOOP_EVT_OUTDOOR_UPDATE    (1 << 3)
-#define MLOOP_EVT_ALL               (MLOOP_EVT_TIME_SYNC | \
-                                     MLOOP_EVT_WIFI_UPDATE | \
-                                     MLOOP_EVT_INNER_UPDATE | \
-                                     MLOOP_EVT_OUTDOOR_UPDATE)
-
 static TimerHandle_t time_sync_timer;
-static TimerHandle_t wifi_update_timer;
 static TimerHandle_t time_update_timer;
-static TimerHandle_t inner_update_timer;
 static TimerHandle_t outdoor_update_timer;
+static bool inner_ready;
+static bool outdoor_ready;
+static bool ota_ready_sent;
+
+/** @brief 首次本地和在线数据都已显示后，开放 OTA 自动首检。 */
+static void ota_ready_update(void)
+{
+    if (!ota_ready_sent && inner_ready && outdoor_ready)
+    {
+        ota_ready_sent = true;
+        ota_app_ready();
+    }
+}
 
 static void time_sync(void)
 {
@@ -77,43 +79,6 @@ err:
     xTimerChangePeriod(time_sync_timer, pdMS_TO_TICKS(restart_sync_delay), 0);
 }
 
-static void wifi_update(void)
-{
-    static esp_wifi_info_t last_info = { 0 };
-
-    esp_wifi_info_t info = { 0 };
-    if (!esp_at_get_wifi_info(&info))
-    {
-        printf("[AT] wifi info get failed\n");
-        return;
-    }
-    
-    if (memcmp(&info, &last_info, sizeof(esp_wifi_info_t)) == 0)
-    {
-        return;
-    }
-    
-    if (last_info.connected == info.connected)
-    {
-        return;
-    }
-    
-    if (info.connected)
-    {
-        printf("[WIFI] connected to %s\n", info.ssid);
-        printf("[WIFI] SSID: %s, BSSID: %s, Channel: %d, RSSI: %d\n",
-                info.ssid, info.bssid, info.channel, info.rssi);
-        main_page_redraw_wifi_ssid(info.ssid);
-    }
-    else
-    {
-        printf("[WIFI] disconnected from %s\n", last_info.ssid);
-        main_page_redraw_wifi_ssid("wifi lost");
-    }
-    
-    memcpy(&last_info, &info, sizeof(esp_wifi_info_t));
-}
-
 static void time_update(void)
 {
     static rtc_date_time_t last_date = { 0 };
@@ -126,19 +91,24 @@ static void time_update(void)
         return;
     }
     
-    if (memcmp(&date, &last_date, sizeof(rtc_date_time_t)) == 0)
-    {
-        return;
-    }
-    
-    memcpy(&last_date, &date, sizeof(rtc_date_time_t));
+    bool date_changed = date.year != last_date.year ||
+                        date.month != last_date.month ||
+                        date.day != last_date.day ||
+                        date.weekday != last_date.weekday;
+
+    /* 时间函数会自行只刷新变化的数字和冒号；日期只在跨天时重画。 */
     main_page_redraw_time(&date);
-    main_page_redraw_date(&date);
+    if (date_changed)
+        main_page_redraw_date(&date);
+
+    last_date = date;
 }
 
 static void inner_update(void)
 {
-    static float last_temperature, last_humidity;
+    static int16_t last_temperature_x10;
+    static uint16_t last_humidity_x10;
+    static bool has_last_measurement;
     
     if (!aht20_start_measurement())
     {
@@ -152,25 +122,59 @@ static void inner_update(void)
         return;
     }
     
-    float temperature = 0.0f, humidity = 0.0f;
+    int16_t temperature_x10;
+    uint16_t humidity_x10;
     
-    if (!aht20_read_measurement(&temperature, &humidity))
+    if (!aht20_read_measurement(&temperature_x10, &humidity_x10))
     {
         printf("[AHT20] read measurement failed\n");
         return;
     }
     
-    if (temperature == last_temperature && humidity == last_humidity)
+    if (has_last_measurement && temperature_x10 == last_temperature_x10 &&
+        humidity_x10 == last_humidity_x10)
     {
         return;
     }
     
-    last_temperature = temperature;
-    last_humidity = humidity;
+    last_temperature_x10 = temperature_x10;
+    last_humidity_x10 = humidity_x10;
+    has_last_measurement = true;
     
-    printf("[AHT20] Temperature: %.1f, Humidity: %.1f\n", temperature, humidity);
-    main_page_redraw_inner_temperature(temperature);
-    main_page_redraw_inner_humidity(humidity);
+    int32_t temperature_abs = temperature_x10 < 0 ?
+                              -(int32_t)temperature_x10 : temperature_x10;
+    printf("[AHT20] Temperature: %s%ld.%ld, Humidity: %u.%u\n",
+           temperature_x10 < 0 ? "-" : "",
+           (long)(temperature_abs / 10), (long)(temperature_abs % 10),
+           (unsigned int)(humidity_x10 / 10u),
+           (unsigned int)(humidity_x10 % 10u));
+    main_page_redraw_inner_temperature(temperature_x10);
+    main_page_redraw_inner_humidity(humidity_x10);
+
+    if (!inner_ready)
+    {
+        inner_ready = true;
+        printf("[APP] first indoor measurement ready\n");
+        ota_ready_update();
+    }
+}
+
+/**
+ * @brief 独立的室内传感器任务。
+ *
+ * AHT20 不再经过可能被 HTTP/OTA 堵住的网络工作队列，因此固件下载期间仍按
+ * 3 秒周期采集和刷新。
+ */
+static void inner_task(void *parameter)
+{
+    TickType_t last_wake = xTaskGetTickCount();
+
+    (void)parameter;
+    while (1)
+    {
+        inner_update();
+        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(INNER_UPDATE_INTERVAL));
+    }
 }
 
 static void outdoor_update(void)
@@ -192,16 +196,28 @@ static void outdoor_update(void)
         return;
     }
     
-    if (memcmp(&last_weather, &weather, sizeof(weather_info_t)) == 0)
+    if (memcmp(&last_weather, &weather, sizeof(weather_info_t)) != 0)
     {
-        return;
+        int32_t temperature_abs = weather.temperature_x10 < 0 ?
+                                  -(int32_t)weather.temperature_x10 :
+                                  weather.temperature_x10;
+
+        memcpy(&last_weather, &weather, sizeof(weather_info_t));
+        printf("[WEATHER] %s, %s, %s%ld.%ld\n",
+               weather.city, weather.weather,
+               weather.temperature_x10 < 0 ? "-" : "",
+               (long)(temperature_abs / 10),
+               (long)(temperature_abs % 10));
+        main_page_redraw_outdoor_temperature(weather.temperature_x10);
+        main_page_redraw_outdoor_weather_icon(weather.weather_code);
     }
-    
-    memcpy(&last_weather, &weather, sizeof(weather_info_t));
-    printf("[WEATHER] %s, %s, %.1f\n", weather.city, weather.weather, weather.temperature);
-    
-    main_page_redraw_outdoor_temperature(weather.temperature);
-    main_page_redraw_outdoor_weather_icon(weather.weather_code);
+
+    if (!outdoor_ready)
+    {
+        outdoor_ready = true;
+        printf("[APP] first online weather ready\n");
+        ota_ready_update();
+    }
 }
 
 typedef void (*app_job_t)(void);
@@ -228,18 +244,24 @@ void app_init(void)
 {
     time_update_timer = xTimerCreate("time update", pdMS_TO_TICKS(TIME_UPDATE_INTERVAL), pdTRUE, time_update, app_timer_cb);
     time_sync_timer = xTimerCreate("time sync", pdMS_TO_TICKS(200), pdFALSE, time_sync, work_timer_cb);
-    wifi_update_timer = xTimerCreate("wifi update", pdMS_TO_TICKS(WIFI_UPDATE_INTERVAL), pdTRUE, wifi_update, work_timer_cb);
-    inner_update_timer = xTimerCreate("inner upadte", pdMS_TO_TICKS(INNER_UPDATE_INTERVAL), pdTRUE, inner_update, work_timer_cb);
     outdoor_update_timer = xTimerCreate("outdoor update", pdMS_TO_TICKS(OUTDOOR_UPDATE_INTERVAL), pdTRUE, outdoor_update, work_timer_cb);
 
-    workqueue_run(app_work, time_sync);
-    workqueue_run(app_work, wifi_update);
-    workqueue_run(app_work, inner_update);
-    workqueue_run(app_work, outdoor_update);
-    
     xTimerStart(time_update_timer, 0);
-    xTimerStart(time_sync_timer, 0);
-    xTimerStart(wifi_update_timer, 0);
-    xTimerStart(inner_update_timer, 0);
+    configASSERT(xTaskCreate(inner_task, "indoor", 512, NULL, 4, NULL) ==
+                 pdPASS);
+}
+
+void app_network_connected(void)
+{
+    /* 首次联网和每次重连都立即校时、刷新一次天气，随后恢复原有周期。 */
+    workqueue_run(app_work, time_sync);
+    workqueue_run(app_work, outdoor_update);
     xTimerStart(outdoor_update_timer, 0);
+}
+
+void app_network_disconnected(void)
+{
+    /* 已经排队的网络操作允许自然失败；只阻止新的周期任务继续进入队列。 */
+    xTimerStop(time_sync_timer, 0);
+    xTimerStop(outdoor_update_timer, 0);
 }

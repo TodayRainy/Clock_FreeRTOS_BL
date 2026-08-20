@@ -32,9 +32,9 @@
 #include "elog.h"
 
 #ifdef FIRMWARE_BUILD_PROFILE_DEV
-#define BL_VERSION       "v3.3.0-resume-dev"
+#define BL_VERSION       "v3.4.0-ota-ordering-dev"
 #else
-#define BL_VERSION       "v3.3.0-resume-prod"
+#define BL_VERSION       "v3.4.0-ota-ordering-prod"
 #endif
 #define RX_TIMEOUT_MS              20u
 #define HIGH_SPEED_IDLE_TIMEOUT_MS 2000u

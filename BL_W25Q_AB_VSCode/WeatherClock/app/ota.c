@@ -23,6 +23,7 @@
 #include "console.h"
 #include "crc32.h"
 #include "esp_at.h"
+#include "firmware_release_policy.h"
 #include "firmware_security_policy.h"
 #include "magic_header.h"
 #include "ota.h"
@@ -44,26 +45,18 @@
 #define OTA_MANIFEST_BUFFER_SIZE    1024u
 #define OTA_STREAM_BUFFER_SIZE      1024u
 #define OTA_URL_SIZE                256u
-#define OTA_VERSION_SIZE            64u
-
 #define OTA_EVENT_UPDATE            (1u << 0)
+#define OTA_EVENT_APP_READY         (1u << 1)
 
 typedef struct
 {
-    char version[OTA_VERSION_SIZE];
     char download_url[OTA_URL_SIZE];
-    uint32_t security_version;
     uint32_t xbin_size;
     uint8_t xbin_sha256[SHA256_DIGEST_SIZE];
-    uint32_t payload_size;
-    uint32_t payload_crc32;
-    uint8_t payload_sha256[SHA256_DIGEST_SIZE];
     magic_header_t header;
 } ota_candidate_t;
 
 static TaskHandle_t ota_task_handle;
-static ota_candidate_t available_candidate;
-static bool candidate_available;
 static char manifest_buffer[OTA_MANIFEST_BUFFER_SIZE];
 static uint8_t stream_buffer[OTA_STREAM_BUFFER_SIZE];
 
@@ -200,53 +193,31 @@ static bool json_hex(const char *json, const char *key,
            decode_hex(text, output, size);
 }
 
-/** @brief 把八位十六进制 CRC 字符串转换为 uint32_t。 */
-static bool json_crc32(const char *json, const char *key, uint32_t *output)
-{
-    char text[9];
-    uint8_t bytes[4];
-
-    if (!json_string(json, key, text, sizeof(text)) ||
-        !decode_hex(text, bytes, sizeof(bytes)))
-        return false;
-    *output = ((uint32_t)bytes[0] << 24) | ((uint32_t)bytes[1] << 16) |
-              ((uint32_t)bytes[2] << 8) | bytes[3];
-    return true;
-}
-
-/** @brief 解析当前项目发布工具产生的扁平 OTA 清单。 */
+/**
+ * @brief 解析定位 XBIN 所需的最小清单字段。
+ *
+ * 清单仍保留版本、发布序号和摘要等可读元数据，以兼容已经发布的旧客户端；
+ * 新客户端只信任随后下载的 XBIN Header，避免同一信息存在两份运行时来源。
+ */
 static bool manifest_parse(const char *json, ota_candidate_t *candidate)
 {
     char product[32];
     uint32_t manifest_version;
-    uint32_t format_version;
 
     memset(candidate, 0, sizeof(*candidate));
     if (!json_u32(json, "manifest_version", &manifest_version) ||
         manifest_version != 1u ||
         !json_string(json, "product", product, sizeof(product)) ||
         strcmp(product, OTA_PRODUCT) != 0 ||
-        !json_string(json, "firmware_version", candidate->version,
-                     sizeof(candidate->version)) ||
-        !json_u32(json, "security_version", &candidate->security_version) ||
-        !json_u32(json, "xbin_format_version", &format_version) ||
-        format_version != MAGIC_HEADER_FORMAT_V2 ||
         !json_u32(json, "xbin_size", &candidate->xbin_size) ||
         !json_hex(json, "xbin_sha256", candidate->xbin_sha256,
                   sizeof(candidate->xbin_sha256)) ||
-        !json_u32(json, "payload_size", &candidate->payload_size) ||
-        !json_crc32(json, "payload_crc32", &candidate->payload_crc32) ||
-        !json_hex(json, "payload_sha256", candidate->payload_sha256,
-                  sizeof(candidate->payload_sha256)) ||
         !json_string(json, "download_url", candidate->download_url,
                      sizeof(candidate->download_url)))
         return false;
 
-    return candidate->payload_size > 0u &&
-           candidate->payload_size <= MAGIC_DATA_MAX_SIZE &&
-           candidate->xbin_size == MAGIC_HEADER_AREA_SIZE +
-                                   candidate->payload_size &&
-           candidate->xbin_size <= (1024u * 1024u) &&
+    return candidate->xbin_size > MAGIC_HEADER_AREA_SIZE &&
+           candidate->xbin_size <= MAGIC_HEADER_AREA_SIZE + MAGIC_DATA_MAX_SIZE &&
            strncmp(candidate->download_url, "https://", 8u) == 0;
 }
 
@@ -306,29 +277,25 @@ static bool download_candidate_header(ota_candidate_t *candidate)
     if (!ok || !magic_header_validate_data(&candidate->header) ||
         memchr(candidate->header.version, '\0', MAGIC_VERSION_SIZE) == NULL)
         return false;
-    return strcmp(candidate->header.version, candidate->version) == 0 &&
-           candidate->header.security_version == candidate->security_version &&
-           candidate->header.data_length == candidate->payload_size &&
-           candidate->header.data_crc32 == candidate->payload_crc32 &&
-           memcmp(candidate->header.image_sha256,
-                  candidate->payload_sha256, MAGIC_SHA256_SIZE) == 0;
+    return candidate->header.data_offset + candidate->header.data_length ==
+           candidate->xbin_size;
 }
 
 /**
  * @brief 联网检查清单并缓存一份通过格式一致性检查的候选固件。
- * @return 有不同于当前应用、且满足防降级规则的候选时返回 true。
+ * @param[out] candidate 可自动更新时返回完整候选信息。
+ * @return 候选发布序号更大且满足安全版本规则时返回 true。
  */
-static bool ota_check(void)
+static bool ota_check(ota_candidate_t *candidate)
 {
-    ota_candidate_t candidate;
     boot_state_t state;
     const magic_header_t *current = (const magic_header_t *)MAGIC_HEADER_ADDR;
+    firmware_release_decision_t release_decision;
     uint8_t target_slot;
 
-    candidate_available = false;
     printf("[OTA] checking manifest\n");
     if (!wifi_is_connected() || !download_manifest() ||
-        !manifest_parse(manifest_buffer, &candidate))
+        !manifest_parse(manifest_buffer, candidate))
     {
         printf("[OTA] manifest check failed\n");
         return false;
@@ -339,38 +306,60 @@ static bool ota_check(void)
         printf("[OTA] A/B state is not ready for an update\n");
         return false;
     }
-    if (!firmware_security_version_allowed(state.minimum_security_version,
-                                           candidate.security_version, false))
-    {
-        printf("[OTA] candidate security version is below device floor\n");
-        return false;
-    }
-    if (!download_candidate_header(&candidate))
+    if (!download_candidate_header(candidate))
     {
         printf("[OTA] candidate header does not match manifest\n");
         return false;
     }
-    if (magic_header_validate_data(current) &&
-        memcmp(current->image_sha256, candidate.header.image_sha256,
-               MAGIC_SHA256_SIZE) == 0)
+    if (!firmware_security_version_allowed(
+            state.minimum_security_version,
+            candidate->header.security_version, false))
     {
-        printf("[OTA] firmware is already current (%s)\n", current->version);
+        printf("[OTA] candidate security version is below device floor\n");
+        return false;
+    }
+    if (!magic_header_validate_data(current))
+    {
+        printf("[OTA] current firmware header is invalid\n");
+        return false;
+    }
+
+    release_decision = firmware_release_decide(
+        current->release_sequence, current->image_sha256,
+        candidate->header.release_sequence, candidate->header.image_sha256);
+    if (release_decision == FIRMWARE_RELEASE_CURRENT)
+    {
+        printf("[OTA] firmware is already current (%s, release %lu)\n",
+               current->version, (unsigned long)current->release_sequence);
+        return false;
+    }
+    if (release_decision == FIRMWARE_RELEASE_OLDER)
+    {
+        printf("[OTA] older release ignored: current=%lu candidate=%lu\n",
+               (unsigned long)current->release_sequence,
+               (unsigned long)candidate->header.release_sequence);
+        return false;
+    }
+    if (release_decision == FIRMWARE_RELEASE_CONFLICT)
+    {
+        printf("[OTA] release %lu has different content; package rejected\n",
+               (unsigned long)candidate->header.release_sequence);
         return false;
     }
 
     target_slot = state.active_slot == BOOT_SLOT_A ? BOOT_SLOT_B : BOOT_SLOT_A;
-    if (install_request_matches(&candidate, target_slot))
+    if (install_request_matches(candidate, target_slot))
     {
         update_ready_set(true);
         printf("[OTA] firmware %s is ready; press RESET to install\n",
-               candidate.version);
+               candidate->header.version);
         return false;
     }
 
-    available_candidate = candidate;
-    candidate_available = true;
-    printf("[OTA] update available: %s, %lu bytes\n",
-           candidate.version, (unsigned long)candidate.xbin_size);
+    printf("[OTA] update available: %s, release %lu, %lu bytes\n",
+           candidate->header.version,
+           (unsigned long)candidate->header.release_sequence,
+           (unsigned long)candidate->xbin_size);
     return true;
 }
 
@@ -385,7 +374,7 @@ static bool progress_valid(const ota_progress_t *progress,
            progress->record_crc32 == crc &&
            progress->target_slot == target_slot &&
            progress->xbin_size == candidate->xbin_size &&
-           progress->security_version == candidate->security_version &&
+           progress->security_version == candidate->header.security_version &&
            progress->next_offset >= MAGIC_HEADER_AREA_SIZE &&
            progress->next_offset <= candidate->xbin_size &&
            (progress->next_offset - MAGIC_HEADER_AREA_SIZE) %
@@ -439,7 +428,7 @@ static bool download_payload(const ota_candidate_t *candidate,
         progress.target_slot = target_slot;
         progress.xbin_size = candidate->xbin_size;
         progress.next_offset = MAGIC_HEADER_AREA_SIZE;
-        progress.security_version = candidate->security_version;
+        progress.security_version = candidate->header.security_version;
         memcpy(progress.xbin_sha256, candidate->xbin_sha256,
                sizeof(progress.xbin_sha256));
     }
@@ -517,7 +506,6 @@ static bool verify_download(const ota_candidate_t *candidate,
     uint32_t i;
     bool crc_ok;
     bool payload_header_ok;
-    bool payload_manifest_ok;
     bool xbin_ok;
 
     sha256_init(&payload_sha);
@@ -543,22 +531,17 @@ static bool verify_download(const ota_candidate_t *candidate,
     sha256_final(&payload_sha, payload_digest);
     sha256_final(&xbin_sha, xbin_digest);
 
-    crc_ok = crc == candidate->header.data_crc32 &&
-             crc == candidate->payload_crc32;
+    crc_ok = crc == candidate->header.data_crc32;
     payload_header_ok =
         memcmp(payload_digest, candidate->header.image_sha256,
                sizeof(payload_digest)) == 0;
-    payload_manifest_ok =
-        memcmp(payload_digest, candidate->payload_sha256,
-               sizeof(payload_digest)) == 0;
     xbin_ok = memcmp(xbin_digest, candidate->xbin_sha256,
                      sizeof(xbin_digest)) == 0;
-    printf("[OTA] verify CRC=%s (got %08lX), payload=%s/%s, xbin=%s\n",
+    printf("[OTA] verify CRC=%s (got %08lX), payload=%s, xbin=%s\n",
            crc_ok ? "ok" : "bad", (unsigned long)crc,
            payload_header_ok ? "ok" : "bad",
-           payload_manifest_ok ? "ok" : "bad",
            xbin_ok ? "ok" : "bad");
-    return crc_ok && payload_header_ok && payload_manifest_ok && xbin_ok;
+    return crc_ok && payload_header_ok && xbin_ok;
 }
 
 /** @brief 最后写 Header，使外部槽从“半成品”一次变为有效候选。 */
@@ -611,14 +594,14 @@ static bool request_install(const ota_candidate_t *candidate,
            memcmp(&request, &verify, sizeof(request)) == 0;
 }
 
-static bool ota_download_and_stage(void)
+static bool ota_download_and_stage(const ota_candidate_t *candidate)
 {
     boot_state_t state;
     uint8_t target_slot;
     bool downloaded;
     bool ok;
 
-    if (!candidate_available || !ab_boot_state_load(&state) ||
+    if (!ab_boot_state_load(&state) ||
         state.phase != BOOT_PHASE_NORMAL ||
         state.active_slot >= BOOT_SLOT_COUNT)
         return false;
@@ -631,14 +614,14 @@ static bool ota_download_and_stage(void)
         w25q_deinit();
         return false;
     }
-    printf("[OTA] downloading %s to slot %c\n", available_candidate.version,
+    printf("[OTA] downloading %s to slot %c\n", candidate->header.version,
            target_slot == BOOT_SLOT_A ? 'A' : 'B');
 
-    downloaded = download_payload(&available_candidate, target_slot);
+    downloaded = download_payload(candidate, target_slot);
 
-    ok = downloaded && verify_download(&available_candidate, target_slot) &&
-         commit_header(&available_candidate, target_slot) &&
-         request_install(&available_candidate, target_slot);
+    ok = downloaded && verify_download(candidate, target_slot) &&
+         commit_header(candidate, target_slot) &&
+         request_install(candidate, target_slot);
     w25q_deinit();
     if (!ok)
     {
@@ -667,19 +650,29 @@ static void ota_console_received(uint8_t data)
 
 static void ota_task(void *parameter)
 {
+    ota_candidate_t candidate;
     uint32_t events;
-    TickType_t wait_time = OTA_FIRST_CHECK_TICKS;
+    TickType_t wait_time = portMAX_DELAY;
+    bool automatic_ready = false;
 
     (void)parameter;
-    printf("[OTA] automatic download ready; 'u'=check/download now\n");
+    printf("[OTA] waiting for first indoor and online weather update\n");
+    printf("[OTA] 'u'=check/download now\n");
     while (1)
     {
         if (xTaskNotifyWait(0u, UINT32_MAX, &events, wait_time) != pdTRUE)
             events = OTA_EVENT_UPDATE;
 
-        if ((events & OTA_EVENT_UPDATE) && ota_check())
-            ota_download_and_stage();
-        wait_time = OTA_PERIODIC_CHECK_TICKS;
+        if (events & OTA_EVENT_APP_READY)
+        {
+            automatic_ready = true;
+            wait_time = OTA_FIRST_CHECK_TICKS;
+            printf("[OTA] app data ready; automatic check in 60 seconds\n");
+        }
+        if ((events & OTA_EVENT_UPDATE) && ota_check(&candidate))
+            ota_download_and_stage(&candidate);
+        if ((events & OTA_EVENT_UPDATE) && automatic_ready)
+            wait_time = OTA_PERIODIC_CHECK_TICKS;
     }
 }
 
@@ -698,4 +691,10 @@ void ota_start(void)
     configASSERT(xTaskCreate(ota_task, "ota", 1024, NULL, 3,
                              &ota_task_handle) == pdPASS);
     console_received_register(ota_console_received);
+}
+
+void ota_app_ready(void)
+{
+    if (ota_task_handle != NULL)
+        xTaskNotify(ota_task_handle, OTA_EVENT_APP_READY, eSetBits);
 }

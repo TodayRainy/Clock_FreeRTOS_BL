@@ -100,6 +100,19 @@ def main() -> int:
     expect_rejected("security version modification", forged_security_version,
                     args.openssl, args.public_key)
 
+    forged_release_sequence = bytearray(original)
+    current_release_sequence = struct.unpack_from("<I", forged_release_sequence, 28)[0]
+    changed_release_sequence = (
+        current_release_sequence - 1
+        if current_release_sequence == 0xFFFFFFFF
+        else current_release_sequence + 1
+    )
+    struct.pack_into("<I", forged_release_sequence, 28,
+                     changed_release_sequence)
+    update_header_crc(forged_release_sequence)
+    expect_rejected("release sequence modification", forged_release_sequence,
+                    args.openssl, args.public_key)
+
     forged_signature = bytearray(original)
     forged_signature[160] ^= 0x01
     update_header_crc(forged_signature)

@@ -239,3 +239,24 @@ J-Link已完成整片`verifybin`，镜像前28,268字节与Release Bootloader逐
 
 本轮没有修改RDP、WRP或其他Option Bytes。最终J-Link VTref约3.29 V，备份前PC为
 `0x08013DCC`，位于WeatherClock应用区；备份完成后已恢复CPU运行。
+
+## v3.4 OTA发布顺序救援基线
+
+- Bootloader：`v3.4.0-ota-ordering-dev`，Release Flash 29,312字节；
+- WeatherClock：`v1.7.0-ota-ordering / release 1`，payload 158,036字节；
+- 最终BCR：`Normal / active=A / pending=none / attempts=0 / sequence=303`；
+- 安全版本：当前固件1、设备下限1；
+- 公网Manifest：release 1，XBIN 162,132字节。
+
+实板从release 0完成COS OTA、Bootloader安装和Trial确认后，分别验证了同包不会
+重复下载，以及真实release 0旧包会在Header Range检查后被忽略。J-Link全程保持
+SWD可连接，VTref约3.29 V，没有写RDP、WRP或其他Option Bytes。
+
+最终512 KiB救援镜像为
+`../.device-backups/stm32f407_ota_ordering_v1_7_final_20260820.bin`，长度524,288字节，
+SHA-256为`8A6679889FF2510150CC3562B1BE8048F4B780488AA39122E72F8A9AABCF986C`。
+备份后已立即执行整片`verifybin`并恢复应用运行。对应脚本为：
+
+- `tools/jlink/backup_ota_ordering_v1_7_final.jlink`；
+- `tools/jlink/restore_ota_ordering_v1_7_final.jlink`；
+- `tools/jlink/verify_ota_ordering_v1_7_final.jlink`。

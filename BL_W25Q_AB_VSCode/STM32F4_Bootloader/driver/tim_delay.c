@@ -1,10 +1,10 @@
 #include <stdint.h>
-#include <string.h>
 #include "stm32f4xx.h"
 #include "tim_delay.h"
 
-static volatile uint64_t tim_tick_count;
-static tim_periodic_callback_t periodic_callback;
+#define TIM6_COUNTER_PERIOD_US 65536u
+
+static volatile uint32_t tim_overflow_count;
 
 void tim_delay_init(void)
 {
@@ -15,12 +15,13 @@ void tim_delay_init(void)
     TIM_TimeBaseInitTypeDef TIM_TimeBaseStructure;
     TIM_TimeBaseStructInit(&TIM_TimeBaseStructure);
     TIM_TimeBaseStructure.TIM_Prescaler = apb1_tim_freq_mhz - 1;
-    TIM_TimeBaseStructure.TIM_Period = 999;
+    TIM_TimeBaseStructure.TIM_Period = TIM6_COUNTER_PERIOD_US - 1u;
     TIM_TimeBaseStructure.TIM_ClockDivision = TIM_CKD_DIV1;
     TIM_TimeBaseStructure.TIM_CounterMode = TIM_CounterMode_Up;
     TIM_TimeBaseInit(TIM6, &TIM_TimeBaseStructure);
+    TIM_SetCounter(TIM6, 0u);
+    TIM_ClearITPendingBit(TIM6, TIM_IT_Update);
     TIM_ITConfig(TIM6, TIM_IT_Update, ENABLE);
-    TIM_Cmd(TIM6, ENABLE);
     
     NVIC_InitTypeDef NVIC_InitStructure;
     NVIC_InitStructure.NVIC_IRQChannel = TIM6_DAC_IRQn;
@@ -28,16 +29,32 @@ void tim_delay_init(void)
     NVIC_InitStructure.NVIC_IRQChannelSubPriority = 0;
     NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;
     NVIC_Init(&NVIC_InitStructure);
+
+    tim_overflow_count = 0u;
+    TIM_Cmd(TIM6, ENABLE);
 }
 
 uint64_t tim_now(void)
 {
-    uint64_t now, last_count;
-    do {
-        last_count = tim_tick_count;
-        now = tim_tick_count + TIM_GetCounter(TIM6);
-    } while (last_count != tim_tick_count);
-    return now;
+    uint32_t primask = __get_PRIMASK();
+    uint32_t overflows;
+    uint16_t counter;
+
+    /*
+     * 只在读取溢出次数和16位计数器的几个指令内屏蔽中断，得到同一时刻的
+     * 快照。若更新标志已置位但ISR尚未执行，本次读取先补上该次溢出。
+     */
+    __disable_irq();
+    overflows = tim_overflow_count;
+    counter = (uint16_t)TIM6->CNT;
+    if ((TIM6->SR & TIM_IT_Update) != 0u)
+    {
+        ++overflows;
+        counter = (uint16_t)TIM6->CNT;
+    }
+    __set_PRIMASK(primask);
+
+    return ((uint64_t)overflows << 16) + counter;
 }
 
 uint64_t tim_get_us(void)
@@ -62,18 +79,11 @@ void tim_delay_ms(uint32_t ms)
     while (tim_now() - now < (uint64_t)ms * 1000);
 }
 
-void tim_register_periodic_callback(tim_periodic_callback_t callback)
-{
-    periodic_callback = callback;
-}
-
 void TIM6_DAC_IRQHandler(void)
 {
     if (TIM_GetITStatus(TIM6, TIM_IT_Update) != RESET)
     {
         TIM_ClearITPendingBit(TIM6, TIM_IT_Update);
-        tim_tick_count += 1000;
-        if (periodic_callback)
-            periodic_callback();
+        ++tim_overflow_count;
     }
 }

@@ -43,12 +43,16 @@ def main():
     parser.add_argument("--version")
     parser.add_argument("--security-version", type=lambda value: int(value, 0),
                         default=1)
+    parser.add_argument("--release-sequence", type=lambda value: int(value, 0),
+                        default=1)
     args = parser.parse_args()
 
     if not args.input_file.is_file():
         parser.error(f"input file does not exist: {args.input_file}")
     if not 0 <= args.security_version <= 0xFFFFFFFF:
         parser.error("security version must fit in uint32")
+    if not 1 <= args.release_sequence <= 0xFFFFFFFF:
+        parser.error("release sequence must be in uint32 range 1..0xFFFFFFFF")
 
     bin_data = args.input_file.read_bytes()
     bin_crc = zlib.crc32(bin_data) & 0xFFFFFFFF
@@ -70,6 +74,7 @@ def main():
         key_id,
     )
     struct.pack_into("<I", header, 24, args.security_version)
+    struct.pack_into("<I", header, 28, args.release_sequence)
     struct.pack_into(
         "<IIIII", header, 32,
         DATA_TYPE_FIRMWARE,
@@ -109,6 +114,7 @@ def main():
     print(f"Version: {version_str}")
     print(f"Key ID: 0x{key_id:08X}")
     print(f"Security version: {args.security_version}")
+    print(f"Release sequence: {args.release_sequence}")
     print(f"Image SHA-256: {bin_sha256.hex().upper()}")
 
 if __name__ == "__main__":

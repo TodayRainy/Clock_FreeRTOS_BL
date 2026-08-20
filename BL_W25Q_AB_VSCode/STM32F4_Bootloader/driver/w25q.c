@@ -157,13 +157,14 @@ static uint8_t read_register(w25q_chip_t chip, uint8_t command)
  */
 static bool wait_ready(w25q_chip_t chip, uint32_t timeout_ms)
 {
-    uint64_t start = tim_get_ms();
+    uint64_t start = tim_now();
+    uint64_t timeout_us = (uint64_t)timeout_ms * 1000u;
 
     while (w25q_read_status1(chip) & 0x01u)
     {
         /* 64 KiB块擦除可能持续数秒，不能让正常的Flash忙等待触发IWDG。 */
         watchdog_refresh();
-        if (tim_get_ms() - start >= timeout_ms)
+        if (tim_now() - start >= timeout_us)
             return false;
     }
     return true;
@@ -268,6 +269,8 @@ void w25q_deinit(void)
     while (W25Q_TX_DMA_STREAM->CR & DMA_SxCR_EN);
     DMA_ClearFlag(W25Q_RX_DMA_STREAM, W25Q_RX_DMA_FLAGS);
     DMA_ClearFlag(W25Q_TX_DMA_STREAM, W25Q_TX_DMA_FLAGS);
+    DMA_DeInit(W25Q_RX_DMA_STREAM);
+    DMA_DeInit(W25Q_TX_DMA_STREAM);
 
     /* 确认最后一位已经发送完成，再同时释放两颗Flash。 */
     while (SPI_I2S_GetFlagStatus(SPI1, SPI_I2S_FLAG_BSY) == SET);
@@ -277,9 +280,11 @@ void w25q_deinit(void)
     RCC_APB2PeriphResetCmd(RCC_APB2Periph_SPI1, ENABLE);
     RCC_APB2PeriphResetCmd(RCC_APB2Periph_SPI1, DISABLE);
     RCC_APB2PeriphClockCmd(RCC_APB2Periph_SPI1, DISABLE);
-    RCC_AHB1PeriphResetCmd(RCC_AHB1Periph_DMA2, ENABLE);
-    RCC_AHB1PeriphResetCmd(RCC_AHB1Periph_DMA2, DISABLE);
-    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_DMA2, DISABLE);
+
+    /*
+     * DMA2还由USART1控制台等外设共享。这里只释放W25Q使用的Stream0/3，
+     * 不能复位或关闭整个DMA2，否则OTA结束后会破坏其他DMA通道。
+     */
 
     /* 模拟模式关闭数字输入缓冲，应用以后仍可按自己的用途重新初始化这些脚。 */
     GPIO_StructInit(&gpio);

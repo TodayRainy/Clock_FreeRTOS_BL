@@ -10,13 +10,13 @@
 #include "font.h"
 #include "image.h"
 
-// CLK ¡ª¡ª PB13
-// MOSI ¡ª¡ª PC3
-// MISO ¡ª¡ª PC2
-// CS ¡ª¡ª PE2
-// RESET ¡ª¡ª PE3
-// DC ¡ª¡ª PE4
-// BL ¡ª¡ª PE5
+// CLK â€”â€” PB13
+// MOSI â€”â€” PC3
+// MISO â€”â€” PC2
+// CS â€”â€” PE2
+// RESET â€”â€” PE3
+// DC â€”â€” PE4
+// BL â€”â€” PE5
 
 #define CS_PORT     GPIOE
 #define CS_PIN      GPIO_Pin_2
@@ -27,7 +27,11 @@
 #define BL_PORT     GPIOE
 #define BL_PIN      GPIO_Pin_5
 
+/* The largest current glyph is one ASCII character from the 76-pixel font. */
+#define ST7789_DRAW_BUFFER_SIZE    (38u * 76u * 2u)
+
 static SemaphoreHandle_t write_gram_semaphore;
+static uint8_t draw_buffer[ST7789_DRAW_BUFFER_SIZE] __attribute__((aligned(4)));
 
 static void st7789_init_display(void);
 
@@ -246,9 +250,12 @@ void st7789_fill_color(uint16_t x1, uint16_t y1, uint16_t x2, uint16_t y2, uint1
 static void st7789_draw_font(uint16_t x, uint16_t y, uint16_t width, uint16_t height, const uint8_t *model, uint16_t color, uint16_t bg_color)
 {
     uint16_t bytes_per_row = (width + 7) / 8;
+    uint32_t image_bytes = (uint32_t)width * height * 2u;
     
-    static uint8_t buff[72 * 72 * 2];
-    uint8_t *pbuf = buff;
+    if (image_bytes > sizeof(draw_buffer))
+        return;
+
+    uint8_t *pbuf = draw_buffer;
 	for (uint16_t row = 0; row < height; row++)
 	{
 		const uint8_t *row_data = model + row * bytes_per_row;
@@ -259,10 +266,10 @@ static void st7789_draw_font(uint16_t x, uint16_t y, uint16_t width, uint16_t he
             *pbuf++ = pixel_color & 0xff;
             *pbuf++ = (pixel_color >> 8) & 0xff;
 		}
-	}
+    }
     
     st7789_set_range_and_prepare_gram(x, y, x + width - 1, y + height - 1);
-    st7789_write_gram(buff, pbuf - buff, false);
+    st7789_write_gram(draw_buffer, pbuf - draw_buffer, false);
 }
 
 static const uint8_t *ascii_get_model(const char ch, const font_t *font)
@@ -360,13 +367,61 @@ void st7789_write_string(uint16_t x, uint16_t y, const char *str, uint16_t color
         }
         else
         {
-            char ch[5];
-            strncpy(ch, str, len);
+            /* GB2312å­—å½¢åç§°æ˜¯ä¸¤ä¸ªå­—èŠ‚çš„Cå­—ç¬¦ä¸²ï¼Œæœ«å°¾å¿…é¡»æ˜¾å¼è¡¥é›¶ã€‚ */
+            char ch[3] = { 0 };
+            memcpy(ch, str, (size_t)len);
             st7789_write_chinese(x, y, ch, color, bg_color, font);
             str += len;
             x += font->size;
         }
     }
+}
+
+/**
+ * @brief Expand a PackBits-style RGB565 stream directly into the LCD window.
+ *
+ * The shared draw buffer keeps DMA transfers reasonably large without adding
+ * another permanent RAM allocation. UI rendering is serialized by ui_func(),
+ * so font rendering and image decoding cannot use the buffer concurrently.
+ */
+static void st7789_draw_rle_image(const image_t *image)
+{
+    const uint8_t *source = image->data;
+    const uint8_t *end = source + image->data_size;
+    uint32_t pixels_remaining = (uint32_t)image->width * image->height;
+    uint32_t buffered = 0;
+
+    while (pixels_remaining > 0 && source < end)
+    {
+        uint8_t control = *source++;
+        uint32_t count = (control & 0x7Fu) + 1u;
+        bool repeated = (control & 0x80u) != 0;
+        uint32_t packet_bytes = repeated ? 2u : count * 2u;
+
+        if (count > pixels_remaining || (uint32_t)(end - source) < packet_bytes)
+            return;
+
+        const uint8_t *pixel = source;
+        source += packet_bytes;
+        pixels_remaining -= count;
+
+        while (count-- > 0)
+        {
+            draw_buffer[buffered++] = pixel[0];
+            draw_buffer[buffered++] = pixel[1];
+            if (!repeated)
+                pixel += 2;
+
+            if (buffered == sizeof(draw_buffer))
+            {
+                st7789_write_gram(draw_buffer, buffered, false);
+                buffered = 0;
+            }
+        }
+    }
+
+    if (pixels_remaining == 0 && buffered > 0)
+        st7789_write_gram(draw_buffer, buffered, false);
 }
 
 void st7789_draw_image(uint16_t x, uint16_t y, const image_t *image)
@@ -376,14 +431,17 @@ void st7789_draw_image(uint16_t x, uint16_t y, const image_t *image)
         return;
     
     st7789_set_range_and_prepare_gram(x, y, x + image->width - 1, y + image->height - 1);
-    st7789_write_gram((uint8_t *)image->data, image->width * image->height * 2, false);
+    if (image->encoding == IMAGE_ENCODING_RGB565_RLE)
+        st7789_draw_rle_image(image);
+    else
+        st7789_write_gram((uint8_t *)image->data, image->width * image->height * 2, false);
 }
 
 void DMA1_Stream4_IRQHandler(void)
 {
     if (DMA_GetITStatus(DMA1_Stream4, DMA_IT_TCIF4) == SET)
     {
-        BaseType_t pxHigherPriorityTaskWoken;
+        BaseType_t pxHigherPriorityTaskWoken = pdFALSE;
         xSemaphoreGiveFromISR(write_gram_semaphore, &pxHigherPriorityTaskWoken);
         portYIELD_FROM_ISR(pxHigherPriorityTaskWoken);
         

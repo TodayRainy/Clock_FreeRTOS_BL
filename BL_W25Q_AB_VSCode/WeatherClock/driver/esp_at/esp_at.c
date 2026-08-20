@@ -2,9 +2,9 @@
  * @file esp_at.c
  * @brief ESP32-C3 AT驱动及面向OTA的流式HTTPS接收。
  *
- * USART2 RX中断只把字节放入单生产者/单消费者环形缓冲区，AT响应解析全部
- * 在任务上下文完成。普通天气命令和OTA共用一个互斥锁；流式HTTP从open到
- * close独占ESP，防止SNTP或天气查询插入同一条AT连接。
+ * USART2 RX由循环DMA持续写入环形缓冲区，AT响应解析全部在任务上下文完成。
+ * 普通天气命令和OTA共用一个互斥锁；流式HTTP从open到close独占ESP，防止
+ * SNTP或天气查询插入同一条AT连接。
  */
 
 #include <stdbool.h>
@@ -17,7 +17,9 @@
 #include "stm32f4xx.h"
 #include "esp_at.h"
 
+#ifndef ESP_AT_DEBUG
 #define ESP_AT_DEBUG             1
+#endif
 #define ESP_AT_DEFAULT_BAUD      115200u
 #define ESP_AT_RECOVERY_BAUD     921600u
 #define ESP_AT_COMMAND_ATTEMPTS  3u
@@ -30,6 +32,9 @@
 #define ESP_HTTP_PULL_SIZE       1024u
 #define ESP_HTTP_HOST_SIZE       96u
 #define ESP_HTTP_PATH_SIZE       320u
+#define ESP_RX_DMA_STREAM        DMA1_Stream5
+#define ESP_TX_DMA_STREAM        DMA1_Stream6
+#define ESP_USART_DMA_CHANNEL    DMA_Channel_4
 
 typedef enum
 {
@@ -64,9 +69,7 @@ typedef struct
     uint8_t buffered[ESP_HTTP_PULL_SIZE];
 } http_session_t;
 
-static volatile uint16_t rx_head;
-static volatile uint16_t rx_tail;
-static volatile bool rx_overflow;
+static uint16_t rx_read_position;
 static uint8_t rx_ring[ESP_RX_RING_SIZE];
 
 static char response_buffer[ESP_RESPONSE_SIZE];
@@ -103,17 +106,49 @@ static void esp_at_usart_init(uint32_t baud)
     usart.USART_StopBits = USART_StopBits_1;
     usart.USART_WordLength = USART_WordLength_8b;
     USART_Init(USART2, &usart);
-    USART_DMACmd(USART2, USART_DMAReq_Tx, ENABLE);
-    USART_ITConfig(USART2, USART_IT_RXNE, ENABLE);
+    USART_DMACmd(USART2, USART_DMAReq_Rx | USART_DMAReq_Tx, ENABLE);
     USART_Cmd(USART2, ENABLE);
 }
 
+/**
+ * @brief 配置USART2的循环RX DMA和普通TX DMA。
+ *
+ * RX使用DMA1 Stream5/Channel4。DMA直接写入2 KiB环形区，任务通过NDTR读取
+ * 当前写位置，不再为每个UART字节进入中断。ESP被动接收模式下单次正文最多
+ * 拉取1024字节，因此任务在下一次拉取前会消费完数据，不会跨越整圈覆盖。
+ */
 static void esp_at_dma_init(void)
 {
     DMA_InitTypeDef dma;
 
+    RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_DMA1, ENABLE);
+
+    DMA_Cmd(ESP_RX_DMA_STREAM, DISABLE);
+    while (DMA_GetCmdStatus(ESP_RX_DMA_STREAM) != DISABLE);
+    DMA_DeInit(ESP_RX_DMA_STREAM);
     DMA_StructInit(&dma);
-    dma.DMA_Channel = DMA_Channel_4;
+    dma.DMA_Channel = ESP_USART_DMA_CHANNEL;
+    dma.DMA_PeripheralBaseAddr = (uint32_t)&USART2->DR;
+    dma.DMA_Memory0BaseAddr = (uint32_t)rx_ring;
+    dma.DMA_DIR = DMA_DIR_PeripheralToMemory;
+    dma.DMA_BufferSize = ESP_RX_RING_SIZE;
+    dma.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
+    dma.DMA_PeripheralDataSize = DMA_PeripheralDataSize_Byte;
+    dma.DMA_MemoryInc = DMA_MemoryInc_Enable;
+    dma.DMA_MemoryDataSize = DMA_MemoryDataSize_Byte;
+    dma.DMA_Mode = DMA_Mode_Circular;
+    dma.DMA_Priority = DMA_Priority_High;
+    dma.DMA_FIFOMode = DMA_FIFOMode_Disable;
+    DMA_Init(ESP_RX_DMA_STREAM, &dma);
+
+    rx_read_position = 0;
+    DMA_Cmd(ESP_RX_DMA_STREAM, ENABLE);
+
+    DMA_Cmd(ESP_TX_DMA_STREAM, DISABLE);
+    while (DMA_GetCmdStatus(ESP_TX_DMA_STREAM) != DISABLE);
+    DMA_DeInit(ESP_TX_DMA_STREAM);
+    DMA_StructInit(&dma);
+    dma.DMA_Channel = ESP_USART_DMA_CHANNEL;
     dma.DMA_PeripheralBaseAddr = (uint32_t)&USART2->DR;
     dma.DMA_DIR = DMA_DIR_MemoryToPeripheral;
     dma.DMA_PeripheralInc = DMA_PeripheralInc_Disable;
@@ -126,18 +161,7 @@ static void esp_at_dma_init(void)
     dma.DMA_FIFOThreshold = DMA_FIFOThreshold_Full;
     dma.DMA_MemoryBurst = DMA_MemoryBurst_INC8;
     dma.DMA_PeripheralBurst = DMA_PeripheralBurst_Single;
-    DMA_Init(DMA1_Stream6, &dma);
-}
-
-static void esp_at_int_init(void)
-{
-    NVIC_InitTypeDef nvic;
-
-    nvic.NVIC_IRQChannel = USART2_IRQn;
-    nvic.NVIC_IRQChannelPreemptionPriority = 5;
-    nvic.NVIC_IRQChannelSubPriority = 0;
-    nvic.NVIC_IRQChannelCmd = ENABLE;
-    NVIC_Init(&nvic);
+    DMA_Init(ESP_TX_DMA_STREAM, &dma);
 }
 
 static void esp_at_lowlevel_init(void)
@@ -146,29 +170,38 @@ static void esp_at_lowlevel_init(void)
     current_baud = ESP_AT_DEFAULT_BAUD;
     esp_at_usart_init(current_baud);
     esp_at_dma_init();
-    esp_at_int_init();
 }
 
 /** @brief 丢弃UART环形缓冲区中的旧提示信息。 */
 static void rx_flush(void)
 {
-    NVIC_DisableIRQ(USART2_IRQn);
-    rx_tail = rx_head;
-    rx_overflow = false;
-    NVIC_EnableIRQ(USART2_IRQn);
+    uint16_t position = (uint16_t)(ESP_RX_RING_SIZE -
+                                   DMA_GetCurrDataCounter(ESP_RX_DMA_STREAM));
+
+    rx_read_position = position == ESP_RX_RING_SIZE ? 0u : position;
+}
+
+/** @brief 返回循环DMA下一次将要写入的位置。 */
+static uint16_t rx_write_position(void)
+{
+    uint16_t position = (uint16_t)(ESP_RX_RING_SIZE -
+                                   DMA_GetCurrDataCounter(ESP_RX_DMA_STREAM));
+
+    return position == ESP_RX_RING_SIZE ? 0u : position;
 }
 
 static bool rx_get_byte(uint8_t *value, TickType_t deadline)
 {
-    while (rx_tail == rx_head)
+    while (rx_read_position == rx_write_position())
     {
         if ((int32_t)(xTaskGetTickCount() - deadline) >= 0)
             return false;
         vTaskDelay(pdMS_TO_TICKS(1));
     }
 
-    *value = rx_ring[rx_tail];
-    rx_tail = (uint16_t)((rx_tail + 1u) % ESP_RX_RING_SIZE);
+    *value = rx_ring[rx_read_position++];
+    if (rx_read_position == ESP_RX_RING_SIZE)
+        rx_read_position = 0;
     return true;
 }
 
@@ -243,15 +276,15 @@ static at_ack_t wait_result(uint32_t timeout_ms)
 
 static void usart_write(const uint8_t *data, uint32_t length)
 {
-    DMA_Cmd(DMA1_Stream6, DISABLE);
-    while (DMA1_Stream6->CR & DMA_SxCR_EN);
-    DMA_ClearFlag(DMA1_Stream6, DMA_FLAG_FEIF6 | DMA_FLAG_DMEIF6 |
+    DMA_Cmd(ESP_TX_DMA_STREAM, DISABLE);
+    while (ESP_TX_DMA_STREAM->CR & DMA_SxCR_EN);
+    DMA_ClearFlag(ESP_TX_DMA_STREAM, DMA_FLAG_FEIF6 | DMA_FLAG_DMEIF6 |
                   DMA_FLAG_TEIF6 | DMA_FLAG_HTIF6 | DMA_FLAG_TCIF6);
-    DMA1_Stream6->M0AR = (uint32_t)data;
-    DMA1_Stream6->NDTR = length;
-    DMA_Cmd(DMA1_Stream6, ENABLE);
-    while (DMA_GetFlagStatus(DMA1_Stream6, DMA_FLAG_TCIF6) == RESET);
-    DMA_Cmd(DMA1_Stream6, DISABLE);
+    ESP_TX_DMA_STREAM->M0AR = (uint32_t)data;
+    ESP_TX_DMA_STREAM->NDTR = length;
+    DMA_Cmd(ESP_TX_DMA_STREAM, ENABLE);
+    while (DMA_GetFlagStatus(ESP_TX_DMA_STREAM, DMA_FLAG_TCIF6) == RESET);
+    DMA_Cmd(ESP_TX_DMA_STREAM, DISABLE);
     while (USART_GetFlagStatus(USART2, USART_FLAG_TC) == RESET);
 }
 
@@ -782,8 +815,8 @@ static int32_t socket_pull(uint8_t *data, uint32_t capacity,
 
         if (received > 0)
             return received;
-        if ((received != 0 && received != ESP_PULL_NO_DATA &&
-             received != ESP_PULL_BUSY) || rx_overflow)
+        if (received != 0 && received != ESP_PULL_NO_DATA &&
+            received != ESP_PULL_BUSY)
             return -1;
 #if ESP_AT_DEBUG
         if (received == ESP_PULL_BUSY)
@@ -974,9 +1007,8 @@ static bool http_open_internal(const char *url, uint32_t range_start,
     return true;
 
 fail:
-#if ESP_AT_DEBUG
+    /* 失败阶段属于必要故障信息，Release也保留；逐条AT收发日志仍由开关控制。 */
     printf("[HTTP] open failed at %s\n", failure_stage);
-#endif
     if (connection_opened)
         socket_cleanup_needed = !close_socket_locked();
     if (current_baud != restore_baud && !set_baud_locked(restore_baud))
@@ -1060,24 +1092,4 @@ bool esp_at_http_close(void)
                (unsigned long)restore_baud);
     xSemaphoreGive(at_mutex);
     return restore_ok;
-}
-
-void USART2_IRQHandler(void)
-{
-    if (USART_GetITStatus(USART2, USART_IT_RXNE) == SET)
-    {
-        uint8_t value = (uint8_t)USART_ReceiveData(USART2);
-        uint16_t next = (uint16_t)((rx_head + 1u) % ESP_RX_RING_SIZE);
-
-        if (next != rx_tail)
-        {
-            rx_ring[rx_head] = value;
-            rx_head = next;
-        }
-        else
-        {
-            rx_overflow = true;
-        }
-        USART_ClearITPendingBit(USART2, USART_IT_RXNE);
-    }
 }

@@ -35,7 +35,11 @@ extern uint32_t SystemCoreClock;
 /* Memory allocation related definitions. */
 #define configSUPPORT_STATIC_ALLOCATION                             0
 #define configSUPPORT_DYNAMIC_ALLOCATION                            1
-#define configTOTAL_HEAP_SIZE                                       (92 * 1024)
+/*
+ * 实板覆盖启动、联网和OTA任务创建后，历史峰值约为22 KiB。
+ * 保留48 KiB可提供约26 KiB余量，同时避免原92 KiB配置长期占满SRAM地址空间。
+ */
+#define configTOTAL_HEAP_SIZE                                       (48 * 1024)
 #define configAPPLICATION_ALLOCATED_HEAP                            0
 
 /* Hook function related definitions. */

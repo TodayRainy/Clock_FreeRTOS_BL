@@ -30,9 +30,9 @@ void workqueue_init(void)
     xTaskCreate(work_func, "workqueue", 1024, NULL, 5, NULL);
 }
 
-void workqueue_run(work_t work, void *param)
+bool workqueue_run(work_t work, void *param)
 {
     configASSERT(work_msg_queue);
     work_message_t msg = { work, param };
-    xQueueSend(work_msg_queue, &msg, portMAX_DELAY);
+    return xQueueSend(work_msg_queue, &msg, 0) == pdTRUE;
 }

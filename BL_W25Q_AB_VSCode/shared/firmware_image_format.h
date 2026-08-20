@@ -47,7 +47,7 @@ typedef struct
     uint32_t signature_algorithm;
     uint32_t key_id;
     uint32_t security_version; /**< 防降级计数；与面向用户的版本字符串相互独立。 */
-    uint32_t reserved1;
+    uint32_t release_sequence; /**< 普通发布序号；自动 OTA 只接受更大的序号。 */
     uint32_t data_type;
     uint32_t data_offset;
     uint32_t data_address;
@@ -69,6 +69,8 @@ _Static_assert(offsetof(magic_header_t, data_type) == 32u,
                "magic_header_t data fields moved");
 _Static_assert(offsetof(magic_header_t, security_version) == 24u,
                "magic_header_t security version moved");
+_Static_assert(offsetof(magic_header_t, release_sequence) == 28u,
+               "magic_header_t release sequence moved");
 _Static_assert(offsetof(magic_header_t, image_sha256) == 52u,
                "magic_header_t SHA-256 moved");
 _Static_assert(offsetof(magic_header_t, version) == 96u,

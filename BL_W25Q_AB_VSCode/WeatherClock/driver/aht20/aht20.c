@@ -141,7 +141,8 @@ bool aht20_wait_for_measurement(void)
     return false;
 }
 
-bool aht20_read_measurement(float *temperature, float *humidity)
+bool aht20_read_measurement(int16_t *temperature_x10,
+                            uint16_t *humidity_x10)
 {
     uint8_t data[6];
     if (!aht20_read(data, 6))
@@ -154,8 +155,16 @@ bool aht20_read_measurement(float *temperature, float *humidity)
                                ((uint32_t)data[4] << 8) | 
                                ((uint32_t)data[5]);
     
-    *humidity = (float)raw_humidity * 100.0f / (float)0x100000;
-    *temperature = (float)raw_temperature * 200.0f / (float)0x100000 - 50.0f;
+    /*
+     * AHT20原始值均为20位：
+     *   RH = raw * 100 / 2^20
+     *   T  = raw * 200 / 2^20 - 50
+     * 这里直接计算放大10倍的结果并四舍五入。最大中间值仍小于
+     * UINT32_MAX，不需要浮点运算或64位除法。
+     */
+    *humidity_x10 = (uint16_t)((raw_humidity * 1000u + 0x80000u) >> 20);
+    *temperature_x10 = (int16_t)((int32_t)((raw_temperature * 2000u +
+                                             0x80000u) >> 20) - 500);
     
     return true;
 }

@@ -26,13 +26,14 @@ static void main_init(void *param)
     
     printf("current app version: %s\r\n", APP_VERSION);
 
-    wifi_init();
-    wifi_page_display();
-    wifi_wait_connect();
-    
+    /*
+     * Wi-Fi 是可恢复的联网服务，不再作为本地时钟启动的前置条件。
+     * 这样热点未开启时，RTC 和 AHT20 仍能正常显示；后台任务会继续重连。
+     */
     main_page_display();
     app_init();
     ota_start();
+    wifi_start();
     
     vTaskDelete(NULL);
 }

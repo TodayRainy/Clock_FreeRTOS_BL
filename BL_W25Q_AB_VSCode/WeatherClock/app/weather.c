@@ -5,6 +5,39 @@
 #include <stdio.h>
 #include "weather.h"
 
+/**
+ * @brief 把天气接口的十进制温度文本转换为放大10倍的定点值。
+ *
+ * 心知天气通常返回整数，这里同时接受一位或多位小数并保留第一位，避免为了
+ * 一个显示值引入atof及其浮点转换代码。
+ */
+static bool parse_temperature_x10(const char *text, int16_t *value)
+{
+	char *end;
+	long whole = strtol(text, &end, 10);
+	long result;
+	bool negative = text[0] == '-';
+
+	if (end == text)
+		return false;
+	if (whole < -3276 || whole > 3276)
+		return false;
+	result = whole * 10;
+	if (*end == '.')
+	{
+		++end;
+		if (*end < '0' || *end > '9')
+			return false;
+		result += negative ? -(*end - '0') : (*end - '0');
+		while (*end >= '0' && *end <= '9')
+			++end;
+	}
+	if (*end != '\0' || result < INT16_MIN || result > INT16_MAX)
+		return false;
+	*value = (int16_t)result;
+	return true;
+}
+
 bool parse_seniverse_response(const char *response, weather_info_t *info)
 {
 	response = strstr(response, "\"results\":");
@@ -48,7 +81,10 @@ bool parse_seniverse_response(const char *response, weather_info_t *info)
 	if (now_temperature_response)
 	{
 		if (sscanf(now_temperature_response, "\"temperature\": \"%15[^\"]\"", temperature_str) == 1)
-			info->temperature = atof(temperature_str);
+		{
+			if (!parse_temperature_x10(temperature_str, &info->temperature_x10))
+				return false;
+		}
 	}
 	
 	return true;

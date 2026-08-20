@@ -33,9 +33,9 @@ set(WEATHERCLOCK_SOURCES
     app/font/font54_maple_semibold.c
     app/font/font64_maple_extrabold.c
     app/font/font76_maple_extrabold.c
-    app/image/img_meihua.c
-    app/image/img_error.c
-    app/image/img_wifi.c
+    app/image/img_meihua_rle.c
+    app/image/img_error_rle.c
+    app/image/img_wifi_rle.c
     app/image/icon_wifi.c
     app/image/icon_wenduji.c
     app/image/icon_duoyun.c
@@ -83,11 +83,28 @@ set_source_files_properties(
 )
 set_source_files_properties(
     app/page/main_page.c
-    PROPERTIES COMPILE_OPTIONS "-Wno-format-truncation"
+    # main_page.c已从历史CP936源码转为UTF-8；执行字符集仍保持GBK，
+    # 因为现有点阵字库和LCD字符串解析器使用两个字节的GB2312编码。
+    PROPERTIES COMPILE_OPTIONS "-fexec-charset=GBK"
 )
 set_source_files_properties(
     driver/esp_at/esp_at.c
     PROPERTIES COMPILE_OPTIONS "-Wno-sign-compare"
+)
+
+# 大图的原始RGB565数组继续作为可追溯源文件；需要更新资源时显式运行本目标。
+add_custom_target(generate_rle_images
+    COMMAND ${Python3_EXECUTABLE} scripts/encode_rgb565_rle.py
+            app/image/img_meihua.c app/image/img_meihua_rle.c
+            --symbol img_meihua --width 180 --height 180
+    COMMAND ${Python3_EXECUTABLE} scripts/encode_rgb565_rle.py
+            app/image/img_error.c app/image/img_error_rle.c
+            --symbol img_error --width 160 --height 160
+    COMMAND ${Python3_EXECUTABLE} scripts/encode_rgb565_rle.py
+            app/image/img_wifi.c app/image/img_wifi_rle.c
+            --symbol img_wifi --width 180 --height 164
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "Regenerating compressed RGB565 image sources"
 )
 
 add_executable(weatherclock ${WEATHERCLOCK_SOURCES})
@@ -102,6 +119,8 @@ target_compile_definitions(weatherclock PRIVATE
     HSE_VALUE=8000000
     ${FIRMWARE_PROFILE_DEFINITION}
     APP_VERSION="${WEATHERCLOCK_VERSION}"
+    # Debug保留完整AT收发日志；Release只保留驱动外层的状态和错误信息。
+    $<$<CONFIG:Release>:ESP_AT_DEBUG=0>
 )
 
 target_include_directories(weatherclock PRIVATE
@@ -139,7 +158,6 @@ target_link_options(weatherclock PRIVATE
     "-T${CMAKE_SOURCE_DIR}/cmake/weatherclock.ld"
     "-L${CMAKE_SOURCE_DIR}/cmake"
     "-Wl,-Map=${CMAKE_CURRENT_BINARY_DIR}/stm32f407.map,--cref"
-    -Wl,-u,_printf_float
 )
 
 add_custom_command(TARGET weatherclock POST_BUILD
@@ -154,6 +172,7 @@ add_custom_command(TARGET weatherclock POST_BUILD
             --public-key ${FIRMWARE_VERIFY_KEY}
             --openssl ${FIRMWARE_OPENSSL_EXECUTABLE}
             --security-version ${FIRMWARE_SECURITY_VERSION}
+            --release-sequence ${FIRMWARE_RELEASE_SEQUENCE}
             --version ${WEATHERCLOCK_VERSION}
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Generating WeatherClock HEX/BIN/XBIN"

@@ -27,8 +27,18 @@ if(NOT FIRMWARE_SECURITY_VERSION MATCHES "^[0-9]+$" OR
     message(FATAL_ERROR "FIRMWARE_SECURITY_VERSION must be a uint32 decimal value")
 endif()
 
-# APP_VERSION 与 XBIN Header 共用同一字符串，串口日志和 OTA 比较不会漂移。
-set(WEATHERCLOCK_VERSION "v1.5.0-ota-bootstrap" CACHE STRING
+# 普通发布序号只决定自动 OTA 的先后顺序。旧 XBIN 的保留字段为0，因此新方案
+# 从1开始即可完成一次平滑迁移；日常每发布一个不同固件都必须递增。
+set(FIRMWARE_RELEASE_SEQUENCE "1" CACHE STRING
+    "Monotonic release sequence used by automatic OTA")
+if(NOT FIRMWARE_RELEASE_SEQUENCE MATCHES "^[0-9]+$" OR
+   FIRMWARE_RELEASE_SEQUENCE LESS 1 OR
+   FIRMWARE_RELEASE_SEQUENCE GREATER 4294967295)
+    message(FATAL_ERROR "FIRMWARE_RELEASE_SEQUENCE must be in uint32 range 1..4294967295")
+endif()
+
+# APP_VERSION 与 XBIN Header 共用同一字符串，串口日志和固件头不会漂移。
+set(WEATHERCLOCK_VERSION "v1.7.0-ota-ordering" CACHE STRING
     "WeatherClock display version stored in the signed XBIN header")
 if(WEATHERCLOCK_VERSION STREQUAL "" OR WEATHERCLOCK_VERSION MATCHES "[^ -~]")
     message(FATAL_ERROR "WEATHERCLOCK_VERSION must be non-empty printable ASCII")
@@ -181,7 +191,7 @@ add_custom_target(test_firmware_security_policy
                 tools/test_firmware_security_policy.c
                 -o .cache/test_firmware_security_policy${_HOST_EXECUTABLE_SUFFIX}
         COMMAND .cache/test_firmware_security_policy${_HOST_EXECUTABLE_SUFFIX}
-        COMMENT "Testing anti-rollback policy with native C"
+        COMMENT "Testing security and automatic OTA release policies with native C"
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         VERBATIM
     )
@@ -198,6 +208,19 @@ add_custom_target(test_firmware_security_policy
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
         VERBATIM
     )
+    add_custom_target(test_weather_parser
+        COMMAND ${CMAKE_COMMAND} -E make_directory .cache
+        COMMAND ${HOST_GCC_EXECUTABLE}
+                -std=c11 -Wall -Wextra
+                -IWeatherClock/app
+                tools/test_weather_parser.c
+                WeatherClock/app/weather.c
+                -o .cache/test_weather_parser${_HOST_EXECUTABLE_SUFFIX}
+        COMMAND .cache/test_weather_parser${_HOST_EXECUTABLE_SUFFIX}
+        COMMENT "Testing fixed-point weather response parsing"
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        VERBATIM
+    )
 else()
     # 固件本身仍可正常构建；只有额外的同源C密码学自测需要宿主机GCC。
     add_custom_target(test_firmware_crypto_c
@@ -207,11 +230,15 @@ else()
     )
     add_custom_target(test_firmware_security_policy
         COMMAND ${CMAKE_COMMAND} -E echo
-                "Host GCC not found; native anti-rollback policy test skipped"
+                "Host GCC not found; native firmware policy test skipped"
     )
     add_custom_target(test_ota_contract
         COMMAND ${CMAKE_COMMAND} -E echo
                 "Host GCC not found; native OTA contract test skipped"
+    )
+    add_custom_target(test_weather_parser
+        COMMAND ${CMAKE_COMMAND} -E echo
+                "Host GCC not found; native weather parser test skipped"
     )
 endif()
 

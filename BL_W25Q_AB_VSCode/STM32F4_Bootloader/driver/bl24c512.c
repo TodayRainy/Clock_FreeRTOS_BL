@@ -125,7 +125,7 @@ static bool begin_write(uint16_t address)
 
 static bool wait_write_complete(void)
 {
-    uint64_t start = tim_get_ms();
+    uint64_t start = tim_now();
 
     do
     {
@@ -135,7 +135,7 @@ static bool wait_write_complete(void)
         i2c_stop();
         if (ready)
             return true;
-    } while (tim_get_ms() - start < 10);
+    } while (tim_now() - start < 10000u);
 
     return false;
 }

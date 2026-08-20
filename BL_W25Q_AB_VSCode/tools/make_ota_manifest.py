@@ -35,6 +35,7 @@ def main() -> None:
     header = package[:HEADER_SIZE]
     magic, image_format = struct.unpack_from("<II", header, 0)
     security_version = struct.unpack_from("<I", header, 24)[0]
+    release_sequence = struct.unpack_from("<I", header, 28)[0]
     data_offset, data_address, data_length, data_crc32 = struct.unpack_from(
         "<IIII", header, 36
     )
@@ -65,6 +66,7 @@ def main() -> None:
         "product": args.product,
         "channel": args.channel,
         "firmware_version": version,
+        "release_sequence": release_sequence,
         "security_version": security_version,
         "xbin_format_version": image_format,
         "xbin_size": len(package),
@@ -81,6 +83,7 @@ def main() -> None:
     )
     print(f"OTA manifest: {args.output}")
     print(f"Version: {version}")
+    print(f"Release sequence: {release_sequence}")
     print(f"XBIN SHA-256: {manifest['xbin_sha256']}")
 
 

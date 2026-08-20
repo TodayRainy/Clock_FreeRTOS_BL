@@ -53,6 +53,7 @@ def validate_xbin(xbin: bytes, app: bytes, openssl: Path, public_key: Path) -> N
     (magic, format_version, header_size, hash_algorithm,
      signature_algorithm, key_id) = struct.unpack_from("<IIIIII", xbin, 0)
     security_version = struct.unpack_from("<I", xbin, 24)[0]
+    release_sequence = struct.unpack_from("<I", xbin, 28)[0]
     data_type, data_offset, data_address, data_length, data_crc = struct.unpack_from(
         "<IIIII", xbin, 32
     )
@@ -66,6 +67,8 @@ def validate_xbin(xbin: bytes, app: bytes, openssl: Path, public_key: Path) -> N
     if (format_version != XBIN_FORMAT_VERSION or header_size != XBIN_STRUCT_SIZE or
             hash_algorithm != 1 or signature_algorithm != 1):
         raise ValueError("XBIN: unsupported signed image format or algorithm")
+    if release_sequence == 0:
+        raise ValueError("XBIN: release sequence 0 is reserved for legacy images")
     if data_type != 1 or data_offset != XBIN_HEADER_SIZE or data_address != APP_BASE:
         raise ValueError("XBIN: type, data offset or application address violates the contract")
     if this_address != BOOT_LIMIT:
@@ -88,7 +91,8 @@ def validate_xbin(xbin: bytes, app: bytes, openssl: Path, public_key: Path) -> N
         raise ValueError("XBIN: ECDSA-P256 signature mismatch")
 
     print(
-        f"XBIN: version={version}, security={security_version}, payload={data_length} bytes, "
+        f"XBIN: version={version}, release={release_sequence}, "
+        f"security={security_version}, payload={data_length} bytes, "
         f"key=0x{key_id:08X}, data CRC=0x{data_crc:08X}, "
         f"SHA-256={image_sha256.hex().upper()}"
     )

@@ -1,0 +1,8 @@
+si SWD
+speed 1000
+connect
+h
+savebin ../.device-backups/stm32f407_ota_ordering_v1_7_final_20260820.bin, 0x08000000, 0x80000
+verifybin ../.device-backups/stm32f407_ota_ordering_v1_7_final_20260820.bin, 0x08000000
+g
+exit

@@ -29,10 +29,10 @@ ESP32-C3 ESP-AT -- USART2 -- WeatherClock OTA task
 Bootloader重新验签、校验、防降级 -> 内部Flash -> Trial -> 应用确认或回退
 ```
 
-天气时钟联网成功后创建优先级 3 的 OTA 任务。它在 60 秒后自动检查一次，
-以后每 24 小时检查一次。任务绝大多数时间都阻塞，不持续轮询，不影响页面刷新。
-发现不同且满足安全版本规则的固件后，会自动下载到非活动 W25Q128 槽并完成
-校验，但不会立即重启。
+天气时钟创建优先级 3 的 OTA 任务后，先等待本地温湿度和在线天气各成功刷新
+一次，再延迟 60 秒执行首次自动检查，以后每 24 小时检查一次。任务绝大多数
+时间都阻塞，不持续轮询，不影响页面刷新。发现发布序号更大且满足安全版本规则
+的固件后，会自动下载到非活动 W25Q128 槽并完成校验，但不会立即重启。
 
 USART1 调试口保留一个学习和联调用命令：
 
@@ -72,6 +72,7 @@ Bootloader 会重新读取整颗目标槽，并检查：
 3. 完整 payload 的 CRC32、SHA-256 和向量表；
 4. 请求字段必须与已验签 Header 一致；
 5. 安全版本不得低于设备已经确认的防降级下限。
+6. 候选普通发布序号必须高于当前固件，旧包和同序号异内容包均拒绝自动安装。
 
 用户按 RESET 后，Bootloader 才读取这条请求。全部检查通过后才写入
 `InstallPending` 并进入原有流程。安装掉电会从外部候选槽重装；Trial 未确认会
@@ -90,13 +91,18 @@ Bootloader 会重新读取整颗目标槽，并检查：
 为了一个约 600 字节的受控文件引入较大的解析依赖。候选固件 URL 必须使用
 HTTPS，COS 对 XBIN 必须支持 HTTP Range。
 
+清单仍输出`firmware_version`、`release_sequence`、`security_version`和 payload
+摘要，以兼容已经部署的旧 OTA 客户端并方便人工检查。新客户端只解析产品、URL、
+XBIN 大小和整包 SHA-256；版本、发布序号、安全版本、CRC 和 payload SHA 均以
+随后读取的 XBIN Header 为唯一运行时来源，避免清单与 Header 各保存一份状态。
+
 生成清单：
 
 ```powershell
 python tools/make_ota_manifest.py `
   build/release-candidate/WeatherClock/stm32f407_upgrade.xbin `
   ota/manifest.json `
-  --url https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/releases/weatherclock-v1.5.1-ota-test.xbin
+  --url https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/releases/weatherclock-v1.7.0-ota-ordering-r1.xbin
 ```
 
 发布时必须先上传带唯一版本名的 XBIN，确认公网可读及 Range 正常，最后再覆盖
@@ -117,7 +123,9 @@ Secret Key 只保存在开发机 COSCLI 配置中，绝不能编译进 STM32 固
 首次部署的 bootstrap 版本包含 OTA 客户端：
 
 ```powershell
-cmake --preset release -DWEATHERCLOCK_VERSION=v1.5.0-ota-bootstrap
+cmake --preset release `
+  -DWEATHERCLOCK_VERSION=v1.7.0-ota-ordering `
+  -DFIRMWARE_RELEASE_SEQUENCE=1
 cmake --build --preset release --target validate_images
 ```
 
@@ -127,13 +135,19 @@ cmake --build --preset release --target validate_images
 cmake -S . -B build/release-candidate -G Ninja `
   -DCMAKE_TOOLCHAIN_FILE=cmake/arm-none-eabi-gcc.cmake `
   -DCMAKE_BUILD_TYPE=Release `
-  -DWEATHERCLOCK_VERSION=v1.5.1-ota-test
+  -DWEATHERCLOCK_VERSION=v1.7.1-ota-test `
+  -DFIRMWARE_RELEASE_SEQUENCE=2
 cmake --build build/release-candidate --target validate_images
 ```
 
-`WEATHERCLOCK_VERSION` 同时写入应用日志中的 `APP_VERSION` 和签名 XBIN Header，
-不会出现屏幕/串口版本与发布清单不一致。`FIRMWARE_SECURITY_VERSION` 是另一条
-独立的单调安全计数，普通功能版本变化不应随意提升它。
+`WEATHERCLOCK_VERSION` 同时写入应用日志中的 `APP_VERSION` 和签名 XBIN Header。
+`FIRMWARE_RELEASE_SEQUENCE` 是每次发布不同固件都递增的普通发布序号，自动 OTA
+用它判断新旧；序号相同时还必须具有相同 SHA，否则按发布冲突拒绝。旧 XBIN 的
+这个保留字为 0，新方案从 1 开始平滑迁移。
+
+`FIRMWARE_SECURITY_VERSION` 是另一条独立的单调安全计数，只有淘汰存在安全问题
+的旧固件时才提高。USART3/KEY2 人工维护路径仍允许安装合法签名的旧发布，普通
+发布序号不会剥夺用户主动降级的能力。
 
 ## 7. 验证清单
 
@@ -244,3 +258,19 @@ OTA 失败并保留检查点，没有写有效 Header、没有提交安装请求
 时目标槽Header仍无效，EEPROM安装请求只在三项摘要全部通过后写入，Bootloader
 仍会在复位后重新验签。1024字节不是越大越好的“性能参数”；若以后要继续提高，
 应同时扩大并重新验证UART环形缓冲、流缓冲、ESP固件可用缓存和任务调度时延。
+
+### 9.3 发布序号与旧包拒绝回归
+
+2026-08-20以`v1.7.0-ota-ordering / release 1`完成新旧判断实测。板上原应用为
+`v1.6.6-ota-resume-test / release 0`，旧客户端能够忽略 Manifest 新增字段，下载
+并安装新 XBIN；新 Bootloader重新验签并复核发布序号，应用通过Trial后回到
+`Normal / active=A / pending=none`。
+
+当前 Manifest 再次检查时输出`firmware is already current`。随后把 Manifest
+短暂指向真实 v1.6.6旧 XBIN，新应用读取其签名 Header 后输出
+`older release ignored: current=1 candidate=0`，没有擦除外部槽或下载旧正文。
+测试结束后公网 Manifest 已恢复为 release 1。
+
+本轮 XBIN 为162,132字节，payload为158,036字节。主机侧还验证了相同发布序号、
+不同 SHA 会得到`FIRMWARE_RELEASE_CONFLICT`，以及直接篡改 Header 发布序号无法
+通过 ECDSA-P256 验签。详细记录见`RELEASE_NOTES_v1.7.0.md`。

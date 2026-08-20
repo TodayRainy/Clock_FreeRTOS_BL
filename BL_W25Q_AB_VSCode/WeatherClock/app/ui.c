@@ -9,6 +9,8 @@
 #include "font.h"
 #include "image.h"
 
+#define UI_TEXT_CAPACITY 40u
+
 typedef enum
 {
     UI_ACTION_FILL_COLOR,
@@ -33,7 +35,7 @@ typedef struct
         {
             uint16_t x;
             uint16_t y;
-            const char *str;
+            char str[UI_TEXT_CAPACITY];
             uint16_t color;
             uint16_t bg_color;
             const font_t *font;
@@ -71,7 +73,6 @@ static void ui_func(void *param)
                                 msg.write_string.str,
                                 msg.write_string.color, msg.write_string.bg_color,
                                 msg.write_string.font);
-            vPortFree((void*)msg.write_string.str);
             break;
         case UI_ACTION_DRAW_IMAGE:
             st7789_draw_image(msg.draw_image.x, msg.draw_image.y,
@@ -106,19 +107,13 @@ void ui_fill_color(uint16_t x, uint16_t y, uint16_t width, uint16_t height, uint
 
 void ui_write_string(uint16_t x, uint16_t y, const char *str, uint16_t color, uint16_t bg_color, const font_t *font)
 {
-    char *pstr = pvPortMalloc(strlen(str) + 1);
-    if (pstr == NULL)
-    {
-        printf("ui write string malloc failed: %s", str);
-        return;
-    }
-    strcpy(pstr, str);
-    
     ui_message_t msg;
     msg.action = UI_ACTION_WRITE_STRING;
     msg.write_string.x = x;
     msg.write_string.y = y;
-    msg.write_string.str = pstr;
+    /* UI现有文本最长为32字节SSID，直接随队列消息复制，避免周期刷新反复申请堆。 */
+    strncpy(msg.write_string.str, str, sizeof(msg.write_string.str) - 1u);
+    msg.write_string.str[sizeof(msg.write_string.str) - 1u] = '\0';
     msg.write_string.color = color;
     msg.write_string.bg_color = bg_color;
     msg.write_string.font = font;
