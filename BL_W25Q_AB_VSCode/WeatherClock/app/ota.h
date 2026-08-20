@@ -3,8 +3,8 @@
  * @brief WeatherClock 后台 OTA 检查与启动门槛接口。
  */
 
-#ifndef __OTA_H__
-#define __OTA_H__
+#ifndef CLOCK_F407_OTA_H
+#define CLOCK_F407_OTA_H
 
 /**
  * @brief 创建低优先级 OTA 任务并注册串口命令。
@@ -22,4 +22,4 @@ void ota_start(void);
  */
 void ota_app_ready(void);
 
-#endif /* __OTA_H__ */
+#endif /* CLOCK_F407_OTA_H */

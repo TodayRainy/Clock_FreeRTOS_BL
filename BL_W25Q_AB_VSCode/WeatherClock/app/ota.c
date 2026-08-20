@@ -8,29 +8,32 @@
  * 状态机安装。下载期间每 32 KiB 保存一次进度，掉电后会从最近检查点恢复。
  */
 
+#include "ota.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+
 #include "FreeRTOS.h"
 #include "task.h"
+
 #include "stm32f4xx.h"
+
 #include "ab_confirm.h"
 #include "bl24c512.h"
 #include "board.h"
-#include "console.h"
 #include "crc32.h"
+#include "console.h"
 #include "esp_at.h"
 #include "firmware_release_policy.h"
 #include "firmware_security_policy.h"
+#include "led.h"
 #include "magic_header.h"
-#include "ota.h"
 #include "ota_contract.h"
 #include "sha256.h"
 #include "w25q.h"
-#include "led.h"
 
 #define OTA_MANIFEST_URL \
     "https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/" \
@@ -61,7 +64,7 @@ static char manifest_buffer[OTA_MANIFEST_BUFFER_SIZE];
 static uint8_t stream_buffer[OTA_STREAM_BUFFER_SIZE];
 
 /** @brief 用三颗板载 LED 表示固件已经下载完成，等待用户按 RESET。 */
-static void update_ready_set(bool ready)
+static void set_update_ready_leds(bool ready)
 {
     led_set(led1, ready);
     led_set(led2, ready);
@@ -112,7 +115,10 @@ static const char *json_value(const char *json, const char *key)
     value = strchr(value + strlen(pattern), ':');
     if (value == NULL)
         return NULL;
-    do { ++value; } while (*value == ' ' || *value == '\t');
+    do
+    {
+        ++value;
+    } while (*value == ' ' || *value == '\t');
     return value;
 }
 
@@ -161,9 +167,12 @@ static bool json_u32(const char *json, const char *key, uint32_t *output)
 
 static int hex_nibble(char value)
 {
-    if (value >= '0' && value <= '9') return value - '0';
-    if (value >= 'a' && value <= 'f') return value - 'a' + 10;
-    if (value >= 'A' && value <= 'F') return value - 'A' + 10;
+    if (value >= '0' && value <= '9')
+        return value - '0';
+    if (value >= 'a' && value <= 'f')
+        return value - 'a' + 10;
+    if (value >= 'A' && value <= 'F')
+        return value - 'A' + 10;
     return -1;
 }
 
@@ -361,7 +370,7 @@ static bool ota_check(ota_candidate_t *candidate)
     target_slot = state.active_slot == BOOT_SLOT_A ? BOOT_SLOT_B : BOOT_SLOT_A;
     if (install_request_matches(candidate, target_slot))
     {
-        update_ready_set(true);
+        set_update_ready_leds(true);
         printf("[OTA] firmware %s is ready; press RESET to install\n",
                candidate->header.version);
         return false;
@@ -457,8 +466,10 @@ static bool download_payload(const ota_candidate_t *candidate,
 
     if (offset == candidate->xbin_size)
         return true;
-    /* 槽擦除完成后才进入高速会话。驱动从切换波特率到关闭并恢复115200
-     * 始终持有同一个ESP互斥锁，天气和Wi-Fi任务不能插入。 */
+    /*
+     * 槽擦除完成后才进入高速会话。驱动从切换波特率到关闭并恢复115200
+     * 始终持有同一个ESP互斥锁，天气和Wi-Fi任务不能插入。
+     */
     if (!esp_at_http_open_at_baud(candidate->download_url, offset,
                                   ESP_HTTP_RANGE_NONE, &info,
                                   OTA_DOWNLOAD_BAUD))
@@ -639,7 +650,7 @@ static bool ota_download_and_stage(const ota_candidate_t *candidate)
     }
 
     progress_clear();
-    update_ready_set(true);
+    set_update_ready_leds(true);
     printf("[OTA] package verified; press RESET to install\n");
     return true;
 }
@@ -695,7 +706,7 @@ void ota_start(void)
     bl24c512_init();
     if (bl24c512_read(OTA_REQUEST_ADDR, (uint8_t *)&request,
                       sizeof(request)) && install_request_valid(&request))
-        update_ready_set(true);
+        set_update_ready_leds(true);
 
     configASSERT(xTaskCreate(ota_task, "ota", 1024, NULL, 3,
                              &ota_task_handle) == pdPASS);

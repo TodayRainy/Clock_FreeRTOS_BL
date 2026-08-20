@@ -1,5 +1,5 @@
-#ifndef __WIFI_H__
-#define __WIFI_H__
+#ifndef CLOCK_F407_WIFI_H
+#define CLOCK_F407_WIFI_H
 
 #define WIFI_SSID   "RAIN"
 #define WIFI_PASSWD "11111111"
@@ -12,4 +12,4 @@
  */
 void wifi_start(void);
 
-#endif /* __WIFI_H__ */
+#endif /* CLOCK_F407_WIFI_H */

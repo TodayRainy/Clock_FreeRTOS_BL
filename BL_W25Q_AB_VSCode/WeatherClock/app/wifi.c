@@ -6,15 +6,16 @@
  * 主页面。热点未开启时任务会定期重试，本地 RTC 与 AHT20 不受影响。
  */
 
-#include <stdbool.h>
-#include <stdint.h>
+#include "wifi.h"
+
 #include <stdio.h>
+
 #include "FreeRTOS.h"
 #include "task.h"
+
 #include "app.h"
 #include "esp_at.h"
 #include "page.h"
-#include "wifi.h"
 
 #define WIFI_RETRY_INTERVAL_MS  5000u
 #define WIFI_POLL_INTERVAL_MS   5000u
@@ -71,7 +72,7 @@ static void wifi_task(void *parameter)
     (void)parameter;
     while (1)
     {
-        esp_wifi_info_t info = { 0 };
+        esp_wifi_info_t info = {0};
 
         if (!initialized)
         {
@@ -115,7 +116,7 @@ static void wifi_task(void *parameter)
         printf("[WIFI] connecting to %s\n", WIFI_SSID);
         esp_at_connect_wifi(WIFI_SSID, WIFI_PASSWD, NULL);
 
-        info = (esp_wifi_info_t){ 0 };
+        info = (esp_wifi_info_t){0};
         if (esp_at_get_wifi_info(&info) && info.connected)
         {
             connected = true;

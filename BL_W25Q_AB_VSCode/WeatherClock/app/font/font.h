@@ -1,5 +1,5 @@
-#ifndef __FONT_H
-#define __FONT_H
+#ifndef CLOCK_F407_FONT_H
+#define CLOCK_F407_FONT_H
 
 // !"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}~
 
@@ -29,4 +29,4 @@ extern const font_t font54_maple_semibold;
 extern const font_t font64_maple_extrabold;
 extern const font_t font76_maple_extrabold;
 
-#endif /* __FONT_H */
+#endif /* CLOCK_F407_FONT_H */

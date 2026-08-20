@@ -3,20 +3,22 @@
  * @brief WeatherClock把通过健康观察期的Trial固件提交为Normal。
  */
 
-#include <stdbool.h>
+#include "ab_confirm.h"
+
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+
 #include "FreeRTOS.h"
 #include "task.h"
+
 #include "bl24c512.h"
-#include "ab_confirm.h"
+#include "crc32.h"
+#include "firmware_image_format.h"
+#include "firmware_security_policy.h"
 #include "health_monitor.h"
 #include "magic_header.h"
-#include "../../shared/ab_boot_contract.h"
-#include "../../shared/firmware_image_format.h"
-#include "../../shared/firmware_security_policy.h"
 
 #ifndef AB_CONFIRM_ENABLED
 #define AB_CONFIRM_ENABLED 1
@@ -24,36 +26,21 @@
 
 #if AB_CONFIRM_ENABLED
 /**
- * @brief 计算与Bootloader一致的标准CRC32。
- */
-static uint32_t calculate_crc32(const uint8_t *data, uint32_t size)
-{
-    uint32_t crc = 0xFFFFFFFFu;
-    uint32_t i;
-    uint32_t bit;
-
-    for (i = 0; i < size; ++i)
-    {
-        crc ^= data[i];
-        for (bit = 0; bit < 8; ++bit)
-            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
-    }
-    return crc ^ 0xFFFFFFFFu;
-}
-
-/**
  * @brief 校验一份EEPROM启动状态副本。
  */
-static bool state_valid(const boot_state_t *state)
+static bool boot_state_valid(const boot_state_t *state)
 {
-    if (state->magic != BOOT_STATE_MAGIC || state->phase > BOOT_PHASE_ROLLBACK_PENDING)
+    if (state->magic != BOOT_STATE_MAGIC ||
+        state->phase > BOOT_PHASE_ROLLBACK_PENDING)
         return false;
-    if ((state->active_slot >= BOOT_SLOT_COUNT && state->active_slot != BOOT_SLOT_NONE) ||
-        (state->pending_slot >= BOOT_SLOT_COUNT && state->pending_slot != BOOT_SLOT_NONE))
+    if ((state->active_slot >= BOOT_SLOT_COUNT &&
+         state->active_slot != BOOT_SLOT_NONE) ||
+        (state->pending_slot >= BOOT_SLOT_COUNT &&
+         state->pending_slot != BOOT_SLOT_NONE))
         return false;
     return state->record_crc32 ==
-           calculate_crc32((const uint8_t *)state,
-                           offsetof(boot_state_t, record_crc32));
+           crc32((const uint8_t *)state,
+                 offsetof(boot_state_t, record_crc32));
 }
 
 /**
@@ -61,13 +48,24 @@ static bool state_valid(const boot_state_t *state)
  */
 bool ab_boot_state_load(boot_state_t *state)
 {
-    boot_state_t a;
-    boot_state_t b;
-    bool av = bl24c512_read(BOOT_STATE_ADDR_A, (uint8_t *)&a, sizeof(a)) && state_valid(&a);
-    bool bv = bl24c512_read(BOOT_STATE_ADDR_B, (uint8_t *)&b, sizeof(b)) && state_valid(&b);
+    boot_state_t state_a;
+    boot_state_t state_b;
+    bool state_a_valid;
+    bool state_b_valid;
 
-    if (!av && !bv) return false;
-    *state = av && (!bv || a.sequence >= b.sequence) ? a : b;
+    state_a_valid = bl24c512_read(BOOT_STATE_ADDR_A, (uint8_t *)&state_a,
+                                  sizeof(state_a)) &&
+                    boot_state_valid(&state_a);
+    state_b_valid = bl24c512_read(BOOT_STATE_ADDR_B, (uint8_t *)&state_b,
+                                  sizeof(state_b)) &&
+                    boot_state_valid(&state_b);
+
+    if (!state_a_valid && !state_b_valid)
+        return false;
+
+    *state = state_a_valid &&
+             (!state_b_valid || state_a.sequence >= state_b.sequence) ?
+             state_a : state_b;
     /* v3.1及更早的BCR把新增字段留为EEPROM擦除值。 */
     if (state->minimum_security_version == UINT32_MAX)
         state->minimum_security_version = 0;
@@ -85,8 +83,8 @@ static bool save_state(boot_state_t *state)
     uint16_t address;
 
     state->sequence++;
-    state->record_crc32 = calculate_crc32((const uint8_t *)state,
-                                          offsetof(boot_state_t, record_crc32));
+    state->record_crc32 = crc32((const uint8_t *)state,
+                                offsetof(boot_state_t, record_crc32));
     address = (state->sequence & 1u) ? BOOT_STATE_ADDR_B : BOOT_STATE_ADDR_A;
     return bl24c512_write(address, (const uint8_t *)state, sizeof(*state)) &&
            bl24c512_read(address, (uint8_t *)&verify, sizeof(verify)) &&
@@ -154,6 +152,7 @@ static void confirm_task(void *parameter)
 void ab_confirm_start(void)
 {
 #if AB_CONFIRM_ENABLED
-    xTaskCreate(confirm_task, "ab confirm", 256, NULL, 4, NULL);
+    configASSERT(xTaskCreate(confirm_task, "ab confirm", 256, NULL, 4,
+                             NULL) == pdPASS);
 #endif
 }

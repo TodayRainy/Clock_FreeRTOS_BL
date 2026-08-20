@@ -3,8 +3,8 @@
  * @brief 应用启动健康状态和独立看门狗喂养策略。
  */
 
-#ifndef __HEALTH_MONITOR_H__
-#define __HEALTH_MONITOR_H__
+#ifndef CLOCK_F407_HEALTH_MONITOR_H
+#define CLOCK_F407_HEALTH_MONITOR_H
 
 #include <stdbool.h>
 
@@ -26,4 +26,4 @@ void health_monitor_mark_ready(void);
 /** @brief 查询核心健康条件是否已经满足。 */
 bool health_monitor_is_ready(void);
 
-#endif /* __HEALTH_MONITOR_H__ */
+#endif /* CLOCK_F407_HEALTH_MONITOR_H */

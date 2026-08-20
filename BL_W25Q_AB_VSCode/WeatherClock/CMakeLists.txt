@@ -83,7 +83,9 @@ set_source_files_properties(
 )
 set_source_files_properties(
     app/page/main_page.c
-    # main_page.c已从历史CP936源码转为UTF-8；执行字符集仍保持GBK，
+    app/page/welcome_page.c
+    app/page/wifi_page.c
+    # 页面源码统一为UTF-8；执行字符集仍保持GBK，
     # 因为现有点阵字库和LCD字符串解析器使用两个字节的GB2312编码。
     PROPERTIES COMPILE_OPTIONS "-fexec-charset=GBK"
 )

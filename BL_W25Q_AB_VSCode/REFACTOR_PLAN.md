@@ -109,8 +109,8 @@
 | 1A | shared 契约、Header、签名与解密包装 | 已完成 |
 | 1B | BCR、固件槽和 Bootloader 状态机 | 已完成 |
 | 2 | 串口协议与 Bootloader 自研驱动 | 已完成 |
-| 3 | WeatherClock 应用、任务、健康确认、Wi-Fi 与 OTA | 进行中 |
-| 4 | WeatherClock 自研底层驱动 | 未开始 |
+| 3 | WeatherClock 应用、任务、健康确认、Wi-Fi 与 OTA | 已完成 |
+| 4 | WeatherClock 自研底层驱动 | 进行中 |
 | 5 | C# 上位机、Python 工具和项目说明 | 未开始 |
 | 6 | 完整主机/实板回归、发布与合并 | 未开始 |
 
@@ -195,6 +195,21 @@
 
 重点：任务生命周期、初始化顺序、Wi-Fi 恢复、天气与 OTA 时序、Trial 健康语义。
 
+完成情况：
+
+- 保持任务优先级、栈大小、看门狗周期、联网周期和OTA参数不变，补齐关键 Task、
+  Queue 与 Timer 创建结果检查；
+- 删除 A/B 确认模块的重复 CRC32 算法，统一使用项目现有实现；
+- 将 SNTP 和天气工作改为明确的 `void (*)(void *)` 回调，移除函数指针与
+  `void *` 之间的非标准转换，同时维持单工作队列串行访问ESP；
+- 统一主程序、Wi-Fi、OTA、UI、页面和天气解析的模块说明、命名、Include 与
+  控制流，修复天气路径字符串 `%128[...]` 对128字节数组的一字节越界；
+- 把两份CP936页面源码转为UTF-8，并通过 `-fexec-charset=GBK` 保持固件内字节
+  与现有GB2312点阵字库兼容，二进制抽查确认只存在GBK文本；
+- 新增天气路径最大长度测试；terra medium 只读审阅未发现 P0～P3；
+- GCC 零错误零警告，天气解析和完整安全测试通过；WeatherClock 增加172 B，
+  Bootloader长度和SHA-256与阶段2一致。
+
 ### 阶段 4：WeatherClock 驱动
 
 按 console、key、ESP-AT、存储、RTC、传感器和显示的依赖顺序分批处理。重点是硬件
@@ -228,6 +243,7 @@
 | 1A | 共享契约、Header、签名和解密入口 | GCC、完整安全测试、terra 审阅通过 | 0 B；目标 BIN 哈希不变 | 不需要 | `refactor(formal): unify contracts and crypto comments` |
 | 1B | BCR、固件槽和 Bootloader 状态机 | GCC、完整安全测试、terra 审阅通过 | 0 B；Bootloader 哈希变化 | 阶段 6 统一验证 | `refactor(boot): clarify A/B state and install flow` |
 | 2 | 串口协议和 Bootloader 自研驱动 | GCC、完整安全测试、terra 审阅通过 | BL +96 B；App 0 B且哈希不变 | 阶段 6 统一验证 | `refactor(boot): unify protocol and driver style` |
+| 3 | WeatherClock任务、Wi-Fi、OTA、UI和页面 | GCC、天气解析、完整安全测试、terra 审阅通过 | App +172 B；BL不变 | 阶段 6 统一验证 | `refactor(app): clarify tasks networking and UI flow` |
 
 ## 8. 待讨论问题
 

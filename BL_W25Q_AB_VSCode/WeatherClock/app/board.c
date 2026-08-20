@@ -1,14 +1,25 @@
-#include <stdint.h>
+/**
+ * @file board.c
+ * @brief WeatherClock板级时钟、公共设备和FreeRTOS故障钩子。
+ *
+ * 这里只集中应用启动所需的板级资源。各外设参数仍由对应驱动配置，任务与业务
+ * 状态由app目录中的模块管理。
+ */
+
+#include "board.h"
+
 #include <stdio.h>
+
 #include "FreeRTOS.h"
 #include "task.h"
+
+#include "aht20.h"
+#include "console.h"
+#include "firmware_image_format.h"
+#include "led_desc.h"
+#include "rtc.h"
 #include "stm32f4xx.h"
 #include "tim_delay.h"
-#include "console.h"
-#include "rtc.h"
-#include "aht20.h"
-#include "board.h"
-#include "led_desc.h"
 
 /* 三颗板载 LED 均为低电平点亮。 */
 static struct led_desc board_led1 = { GPIOE, GPIO_Pin_9, Bit_RESET, Bit_SET };
@@ -20,7 +31,7 @@ led_desc_t led3 = &board_led3;
 
 void board_lowlevel_init(void)
 {
-    SCB->VTOR = 0x08010000;
+    SCB->VTOR = MAGIC_DATA_ADDRESS;
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOA, ENABLE);
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOB, ENABLE);
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_GPIOC, ENABLE);
@@ -36,7 +47,7 @@ void board_lowlevel_init(void)
     RCC_AHB1PeriphClockCmd(RCC_AHB1Periph_DMA2, ENABLE);
     PWR_BackupAccessCmd(ENABLE);
     RCC_LSEConfig(RCC_LSE_ON);
-    while(RCC_GetFlagStatus(RCC_FLAG_LSERDY) == RESET);
+    while (RCC_GetFlagStatus(RCC_FLAG_LSERDY) == RESET);
     RCC_RTCCLKConfig(RCC_RTCCLKSource_LSE);
 }
 

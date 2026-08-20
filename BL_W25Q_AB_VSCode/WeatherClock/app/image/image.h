@@ -1,5 +1,5 @@
-#ifndef __IMAGE_H__
-#define __IMAGE_H__
+#ifndef CLOCK_F407_IMAGE_H
+#define CLOCK_F407_IMAGE_H
 
 #include <stdint.h>
 
@@ -40,4 +40,4 @@ extern const image_t icon_zhongxue;
 extern const image_t icon_zhongyu;
 extern const image_t icon_na;
 
-#endif /* __IMAGE_H__ */
+#endif /* CLOCK_F407_IMAGE_H */

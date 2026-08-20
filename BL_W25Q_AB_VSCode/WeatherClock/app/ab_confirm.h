@@ -1,5 +1,5 @@
-#ifndef __AB_CONFIRM_H__
-#define __AB_CONFIRM_H__
+#ifndef CLOCK_F407_AB_CONFIRM_H
+#define CLOCK_F407_AB_CONFIRM_H
 
 #include <stdbool.h>
 #include "ab_boot_contract.h"
@@ -20,4 +20,4 @@ bool ab_boot_state_load(boot_state_t *state);
  */
 void ab_confirm_start(void);
 
-#endif /* __AB_CONFIRM_H__ */
+#endif /* CLOCK_F407_AB_CONFIRM_H */

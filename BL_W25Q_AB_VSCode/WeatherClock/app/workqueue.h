@@ -1,10 +1,12 @@
-#ifndef __APP_WORKQUEUE_H__
-#define __APP_WORKQUEUE_H__
+#ifndef CLOCK_F407_WORKQUEUE_H
+#define CLOCK_F407_WORKQUEUE_H
 
 #include <stdbool.h>
 
+/** @brief 后台工作队列中单项工作的函数签名。 */
 typedef void (*work_t)(void *param);
 
+/** @brief 创建串行工作队列及其执行任务。 */
 void workqueue_init(void);
 
 /**
@@ -16,4 +18,4 @@ void workqueue_init(void);
  */
 bool workqueue_run(work_t work, void *param);
 
-#endif /* __APP_WORKQUEUE_H__ */
+#endif /* CLOCK_F407_WORKQUEUE_H */
