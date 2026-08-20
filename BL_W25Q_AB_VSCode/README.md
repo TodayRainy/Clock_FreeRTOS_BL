@@ -18,10 +18,10 @@ Formal 是产品线名称，不使用“v4”作为格式名称。Header 中仍�
 
 | 项目 | 当前值 |
 |---|---|
-| Bootloader | `formal-1.0.0-dev` |
-| WeatherClock | `formal-1.0.0` |
+| Bootloader | `formal-1.0.1-dev` |
+| WeatherClock | `formal-1.0.1` |
 | XBIN | Formal revision 1 |
-| release sequence | 4 |
+| release sequence | 5 |
 | security version | 2 |
 | 签名 Key ID | `0xCA9EEE70` |
 | AES Key ID | `0x9B5260DC` |
@@ -29,14 +29,13 @@ Formal 是产品线名称，不使用“v4”作为格式名称。Header 中仍�
 | WeatherClock Flash | 157,680 / 458,752 字节，34.37% |
 | 公网 Manifest | `https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/manifest.json` |
 
-上表 Flash 占用来自当前重构候选代码；公网 Manifest 仍指向已验证的
-`formal-1.0.0` 发布包。候选 WeatherClock 的二进制已经变化，在分配更大的
-`release_sequence` 前不得覆盖 COS 上的 release 4。
+上表和公网 Manifest 均对应 2026-08-20 完成实板验收的 `formal-1.0.1 / release 5`。
+发布包先上传并回读校验，最后才更新 Manifest，避免客户端看到尚不可用的对象。
 
-2026-08-20 的实板最终状态为 `Normal / active=B / pending=none / seq=320`，
-内部应用与 A/B 两槽均通过 Formal Header、ECDSA、AES-GCM、CRC32、SHA-256 和
-向量表检查。完整 USART3 重写的 W25 编程耗时 2.11 秒，总提交耗时 2.72 秒；
-相同镜像断点复用 158,024 字节，总提交耗时 0.81 秒。
+实板最终状态为 `Normal / active=A / pending=none / seq=363`。内部应用与 A/B 两槽
+均为 `formal-1.0.1`，并通过 Formal Header、ECDSA、AES-GCM、CRC32、SHA-256 和
+向量表检查。完整 USART3 重写的 W25 编程耗时 2.08～2.10 秒，总提交耗时
+2.72～2.73 秒；相同镜像断点复用 157,680 字节时总提交耗时 0.81 秒。
 
 ## 工程组成
 
@@ -70,6 +69,7 @@ cmake --build --preset release
 cmake --build build/release --target validate_images --parallel 1
 cmake --build build/release --target test_firmware_security --parallel 1
 dotnet build SerialUpgrader/SerialUpgrader.csproj -c Release
+dotnet run --project SerialUpgrader.ProtocolTests -c Release
 ```
 
 关键产物：
@@ -84,9 +84,9 @@ dotnet build SerialUpgrader/SerialUpgrader.csproj -c Release
 
 ```powershell
 cmake --preset release `
-  -DWEATHERCLOCK_VERSION=formal-1.0.1 `
-  -DFIRMWARE_RELEASE_SEQUENCE=5 `
-  -DFIRMWARE_SECURITY_VERSION=2
+  '-DWEATHERCLOCK_VERSION=formal-1.0.1' `
+  '-DFIRMWARE_RELEASE_SEQUENCE=5' `
+  '-DFIRMWARE_SECURITY_VERSION=2'
 ```
 
 普通功能发布递增 `release_sequence`。只有修复了不能再允许回退的安全问题时，
@@ -128,15 +128,22 @@ Formal Bootloader 不再把内部应用复制到外部 Flash。首次部署应�
 
 项目保持 RDP0、SWD 和 Option Bytes 不变。当前整片内部 Flash 救援镜像为：
 
-`../.device-backups/stm32f407_formal_1_0_0_final_20260820.bin`
+`../.device-backups/stm32f407_formal_1_0_1_refactored_20260820.bin`
 
 长度 524,288 字节，SHA-256：
 
-`FBCB8245952C87C6333FC71CAA8A5C5DB7A9987A2573788C3855707B43BA94DF`
+`67722EEAEC432F1202E5C3F26BEDC94B49B5859EABE084F039DB4A5B9552F76A`
 
-配套脚本位于 `tools/jlink/backup_formal_1_0_0_final.jlink`、
-`restore_formal_1_0_0_final.jlink` 和 `verify_formal_1_0_0_final.jlink`。
+配套脚本位于 `tools/jlink/backup_formal_1_0_1_refactored.jlink`、
+`restore_formal_1_0_1_refactored.jlink` 和
+`verify_formal_1_0_1_refactored.jlink`。
 这些脚本只读写 STM32 内部 512 KiB Flash，不修改 RDP、WRP 或其他 Option Bytes。
+重构前的 `formal-1.0.0` 救援镜像和脚本仍保留，作为第二条恢复路径。
+
+脚本中的备份路径以本目录为工作目录解析；调用 J-Link Commander 时应在
+`BL_W25Q_AB_VSCode` 目录执行，并在命令行选择 `STM32F407VG / SWD`。旧版 J-Link
+对中文固件路径不可靠，实际恢复时可先把 BIN 复制到纯 ASCII 临时路径再执行
+`loadbin` 和 `verifybin`。
 
 ## 密钥说明
 

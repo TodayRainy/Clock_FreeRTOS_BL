@@ -1,6 +1,6 @@
 # A/B Bootloader 安全基线
 
-> 本文按时间保留各阶段实板基线。最下方“Formal 1.0.0”是当前有效基线；
+> 本文按时间保留各阶段实板基线。最下方“Formal 1.0.1”是当前有效基线；
 > 之前的 v2/v3、明文兼容和快照描述仅用于追溯，不代表当前代码仍支持这些功能。
 
 本目录从 `BL` 的当前已验证状态复制，原目录不参与后续双区开发。
@@ -331,3 +331,76 @@ Formal XBIN放入非活动Slot B，再分别写入Formal Bootloader、320字节�
 此外仍保留迁移前救援镜像
 `../.device-backups/stm32f407_encrypted_v3_5_final_20260820.bin`。若Formal工程或
 外部槽同时损坏，可先用J-Link恢复任一已验证整片镜像，再通过USART3重建外部槽。
+
+## Formal 1.0.1 代码重构发布基线
+
+### 版本与产物
+
+- Bootloader：`formal-1.0.1-dev`，34,896字节/48 KiB；
+- WeatherClock：`formal-1.0.1`，157,680字节/448 KiB；
+- release sequence：5；security version：2；
+- WeatherClock CRC32：`0x6927330E`；
+- Bootloader SHA-256：
+  `2217230AF198053E38D459E0CBCBC43E60DC0EBADBED3521D709E650DAF29F9E`；
+- WeatherClock SHA-256：
+  `D0986C7A785B98B4A9907A221038D76CBDF62D2105A1B8638B11134B9CFF88E5`；
+- XBIN：161,776字节，SHA-256
+  `C3FD621C1D52CD46E4CD4C6D0B0AC26FD4DA660C4C4FFB1A6D53CCE1ECFCAFE0`。
+
+### 重构与主机测试
+
+自研代码按 `CODING_STYLE.md` 分六个阶段整理，每个大阶段都由独立 terra medium
+子代理进行只读审阅。确认的问题均已修复；最终 GCC Release、镜像验证、SHA/ECDSA、
+AES-GCM、安全与发布策略、OTA EEPROM 契约、断点续传、天气解析、伪造镜像拒绝、
+Python 语法、.NET Release 和 C# 固定帧协议测试全部通过。
+
+### J-Link 与 USART3
+
+- J-Link S/N 69408257，SWD稳定连接，VTref 3.293 V；
+- 新Bootloader只写入`0x08000000`起始分区，Header和应用在该步骤保持不变；
+- COM29/USART3在2 Mbaud下完整写入非活动槽：W25编程2.08～2.10秒，总提交
+  2.72～2.73秒；
+- 相同镜像复用157,680字节，总提交0.81秒；
+- 最终协议状态：`Normal / active=A / pending=none / attempts=0 / sequence=363`；
+- Slot A、Slot B、内部Flash均为`formal-1.0.1`且完整验证通过。
+
+### Trial、回退与掉电恢复
+
+受控连续复位使Trial尝试次数从2递减到0，Bootloader写入`RollbackPending`并恢复原
+活动槽。测试特意在回退安装过程中再次复位；下次启动仍识别`RollbackPending`、重新
+执行安装，最后回到`Normal`。这同时覆盖了升级失败回退和回退安装中断两条关键掉电
+恢复路径。
+
+### OTA
+
+先通过USART3把内部应用降到`formal-1.0.0 / release 4`，保留另一槽中的release 5。
+旧应用通过手机热点`RAIN`连接网络，完成SNTP与在线天气后从COS读取Manifest，接受
+release 5并提交OTA请求。复位后Bootloader接受Slot B、安装`formal-1.0.1`、进入Trial，
+新应用完成本地温湿度、Wi-Fi、SNTP和健康确认后回到`Normal`。随后用USART3把Slot A
+也更新为release 5，形成最终双槽一致状态。
+
+COS发布按以下顺序完成：先上传XBIN，下载回读并核对161,776字节及SHA-256，再最后
+上传Manifest。公网Manifest现指向`formal-1.0.1 / release 5`。
+
+### 救援镜像
+
+最终512 KiB内部Flash镜像：
+
+`../.device-backups/stm32f407_formal_1_0_1_refactored_20260820.bin`
+
+长度524,288字节，SHA-256：
+
+`67722EEAEC432F1202E5C3F26BEDC94B49B5859EABE084F039DB4A5B9552F76A`
+
+镜像保存后已立即Verify；完成OTA、回退和最终双槽恢复后再次对当前内部Flash执行整片
+Verify，结果仍为`Verify successful`，当时PC位于WeatherClock应用地址`0x080150EC`。
+对应脚本为：
+
+- `tools/jlink/backup_formal_1_0_1_refactored.jlink`；
+- `tools/jlink/restore_formal_1_0_1_refactored.jlink`；
+- `tools/jlink/verify_formal_1_0_1_refactored.jlink`；
+- `tools/jlink/test_trial_reset_loop.jlink`。
+
+全过程未修改RDP、WRP、Option Bytes或SWD。重构前
+`stm32f407_formal_1_0_0_final_20260820.bin`也继续保留，因此内部Flash至少有两条已验证
+恢复基线。

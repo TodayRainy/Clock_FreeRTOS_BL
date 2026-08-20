@@ -81,11 +81,11 @@ def main() -> None:
     parser.add_argument("--openssl", required=True, type=Path)
     parser.add_argument("--encryption-key", required=True, type=Path)
     parser.add_argument("--aes-tool", required=True, type=Path)
-    parser.add_argument("--version", default="formal-1.0.0")
+    parser.add_argument("--version", default="formal-1.0.1")
     parser.add_argument("--security-version", type=lambda value: int(value, 0),
                         default=2)
     parser.add_argument("--release-sequence", type=lambda value: int(value, 0),
-                        default=4)
+                        default=5)
     args = parser.parse_args()
 
     if not args.input_file.is_file():

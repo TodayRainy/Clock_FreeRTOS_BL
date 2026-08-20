@@ -33,8 +33,8 @@ if(NOT FIRMWARE_SECURITY_VERSION MATCHES "^[0-9]+$" OR
     message(FATAL_ERROR "FIRMWARE_SECURITY_VERSION must be a uint32 decimal value")
 endif()
 
-# 普通发布序号只决定自动OTA先后顺序。Formal首版承接现有release 3，从4开始。
-set(FIRMWARE_RELEASE_SEQUENCE "4" CACHE STRING
+# 普通发布序号只决定自动 OTA 先后顺序。每次发布新二进制都必须递增。
+set(FIRMWARE_RELEASE_SEQUENCE "5" CACHE STRING
     "Monotonic release sequence used by automatic OTA")
 if(NOT FIRMWARE_RELEASE_SEQUENCE MATCHES "^[0-9]+$" OR
    FIRMWARE_RELEASE_SEQUENCE LESS 1 OR
@@ -43,7 +43,7 @@ if(NOT FIRMWARE_RELEASE_SEQUENCE MATCHES "^[0-9]+$" OR
 endif()
 
 # APP_VERSION 与 XBIN Header 共用同一字符串，串口日志和固件头不会漂移。
-set(WEATHERCLOCK_VERSION "formal-1.0.0" CACHE STRING
+set(WEATHERCLOCK_VERSION "formal-1.0.1" CACHE STRING
     "WeatherClock display version stored in the signed XBIN header")
 if(WEATHERCLOCK_VERSION STREQUAL "" OR WEATHERCLOCK_VERSION MATCHES "[^ -~]")
     message(FATAL_ERROR "WEATHERCLOCK_VERSION must be non-empty printable ASCII")

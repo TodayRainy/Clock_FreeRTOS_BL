@@ -67,7 +67,7 @@
 旧版 SEGGER J-Link DLL 对中文固件路径处理不可靠。实板写入和 Verify 使用 ASCII
 临时路径，不能只依赖包装脚本的成功提示。
 
-## 3. 本轮冻结项
+## 3. 阶段 1～5 冻结项
 
 风格重构不得顺带改变：
 
@@ -83,6 +83,8 @@
 - COS 公共 Manifest。
 
 发现这些项目存在真实问题时，在“待讨论问题”中记录，得到许可后作为独立功能修改。
+阶段6完成全部验证后，允许只递增发布版本和序号、生成对应Manifest；仍不得改变其
+二进制契约或安全策略。
 
 ## 4. 执行方法
 
@@ -112,7 +114,7 @@
 | 3 | WeatherClock 应用、任务、健康确认、Wi-Fi 与 OTA | 已完成 |
 | 4 | WeatherClock 自研底层驱动 | 已完成 |
 | 5 | C# 上位机、Python 工具和项目说明 | 已完成 |
-| 6 | 完整主机/实板回归、发布与合并 | 进行中 |
+| 6 | 完整主机/实板回归与 Formal 1.0.1 发布 | 已完成 |
 
 ## 6. 分阶段范围
 
@@ -252,17 +254,27 @@
 
 ### 阶段 6：完整验收
 
-- GCC Release 构建；
-- Formal 镜像验证；
-- 密码学、篡改、策略、OTA 契约和断点续传测试；
-- .NET Release 构建；
-- 固件空间对比；
-- J-Link 连接、写入和回读验证；
-- USART3 完整升级和断点复用；
-- Trial 确认与受控回滚；
-- OTA 暂存和安装；
-- 创建新的整片救援镜像；
-- 更新文档、Git tag 和 COS 发布。
+- [x] GCC Release 构建和 Formal 镜像验证；
+- [x] 密码学、篡改、策略、OTA 契约、断点续传和天气解析测试；
+- [x] .NET Release、Python 语法和 C# 固定帧协议测试；
+- [x] 固件空间和 SHA-256 对比；
+- [x] J-Link 连接、写入和整片回读验证；
+- [x] USART3 完整升级、差异传输和全镜像断点复用；
+- [x] Trial 确认、尝试次数耗尽回退和回退安装中再次复位；
+- [x] 旧应用经 ESP-AT/COS 暂存 OTA，复位安装并由新应用确认；
+- [x] 创建并再次验证新的整片救援镜像；
+- [x] COS 按“XBIN 上传并回读、Manifest 最后更新”发布 Formal 1.0.1；
+- [x] 更新 README、安全基线、发布说明和重构报告。
+
+验收中发现 C# 重构误把响应帧偏移用于请求帧构造，导致请求多出一个字节。该问题在
+真正连接 COM29 时被固定字节序列定位；现已分离请求/响应偏移，并新增无外部测试框架
+依赖的 `SerialUpgrader.ProtocolTests`。修正后上位机状态查询、2 Mbaud完整升级和槽提交
+均通过。
+
+最终 Bootloader 为34,896 B，WeatherClock为157,680 B，XBIN为161,776 B。最终BCR为
+`Normal / active=A / pending=none / attempts=0 / sequence=363`，A、B两槽和内部应用均为
+`formal-1.0.1 / release 5 / security 2`。完整证据见`SAFETY_BASELINE.md`和
+`RELEASE_NOTES_FORMAL_1.0.1.md`。
 
 ## 7. 每批验证记录
 
@@ -276,6 +288,7 @@
 | 3 | WeatherClock任务、Wi-Fi、OTA、UI和页面 | GCC、天气解析、完整安全测试、terra 审阅通过 | App +172 B；BL不变 | 阶段 6 统一验证 | `refactor(app): clarify tasks networking and UI flow` |
 | 4 | WeatherClock自研底层驱动 | GCC、天气解析、完整安全测试、terra 审阅通过 | App -516 B；BL不变 | 阶段 6 统一验证 | `refactor(drivers): clarify hardware and DMA flows` |
 | 5 | C#上位机、Python工具和代码导读 | GCC、完整主机测试、Python语法、.NET、terra审阅通过 | 固件长度不变 | 阶段 6 统一验证 | `refactor(tools): align updater and project documentation` |
+| 6 | Formal 1.0.1发布与完整回归 | GCC、完整主机测试、.NET、协议测试、terra审阅通过 | BL 34,896 B；App 157,680 B | J-Link、USART3、Trial、回退、OTA、整片Verify通过 | `release: validate formal 1.0.1 refactor` |
 
 ## 8. 待讨论问题
 
@@ -283,6 +296,6 @@
 
 ## 9. 最终发布规则
 
-重构期间不更新公共 COS Manifest。若最终 WeatherClock BIN 的 SHA-256 与基线不同，
-不得继续使用 `release_sequence=4` 发布冲突包；完成测试后再确定新版本和更大的发布
-序号。公共发布继续采用“上传并验证 XBIN，最后更新 Manifest”的顺序。
+最终 WeatherClock BIN 的 SHA-256 与基线不同，因此发布版本递增为 `formal-1.0.1`，
+`release_sequence` 递增为5，`security_version` 保持2。公共发布已采用“上传并回读
+验证XBIN，最后更新Manifest”的顺序完成；release 4对象仍保留用于回归测试。

@@ -1,0 +1,7 @@
+si SWD
+speed 1000
+connect
+h
+verifybin ../.device-backups/stm32f407_formal_1_0_1_refactored_20260820.bin, 0x08000000
+g
+exit

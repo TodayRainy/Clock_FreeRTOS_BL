@@ -39,20 +39,20 @@ OTA 不是高频轮询任务：
   "manifest_version": 2,
   "product": "clock-f407",
   "channel": "stable",
-  "firmware_version": "formal-1.0.0",
-  "release_sequence": 4,
+  "firmware_version": "formal-1.0.1",
+  "release_sequence": 5,
   "security_version": 2,
   "xbin_format": "formal",
   "format_revision": 1,
-  "xbin_size": 162120,
-  "xbin_sha256": "F4440CCD01F7CC06A0D9F31BDA17B105F8F7A7A2F6E7B6BEB1B73441477C496B",
-  "payload_size": 158024,
-  "payload_crc32": "6842D847",
-  "payload_sha256": "37528CB11BCFA9F1345DCA58E9929342EBD22F4DFDDDC2EF97B26A29A911CAFC",
+  "xbin_size": 161776,
+  "xbin_sha256": "C3FD621C1D52CD46E4CD4C6D0B0AC26FD4DA660C4C4FFB1A6D53CCE1ECFCAFE0",
+  "payload_size": 157680,
+  "payload_crc32": "6927330E",
+  "payload_sha256": "D0986C7A785B98B4A9907A221038D76CBDF62D2105A1B8638B11134B9CFF88E5",
   "signing_key_id": "CA9EEE70",
   "encryption": "AES-256-GCM",
   "encryption_key_id": "9B5260DC",
-  "download_url": "https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/releases/weatherclock-formal-1.0.0-r4.xbin"
+  "download_url": "https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/releases/weatherclock-formal-1.0.1-r5.xbin"
 }
 ```
 
@@ -99,9 +99,9 @@ EEPROM 每 32 KiB 保存一次进度，包括目标槽、XBIN 大小、Header CR
 
 ```powershell
 cmake --preset release `
-  -DWEATHERCLOCK_VERSION=formal-1.0.1 `
-  -DFIRMWARE_RELEASE_SEQUENCE=5 `
-  -DFIRMWARE_SECURITY_VERSION=2
+  '-DWEATHERCLOCK_VERSION=formal-1.0.1' `
+  '-DFIRMWARE_RELEASE_SEQUENCE=5' `
+  '-DFIRMWARE_SECURITY_VERSION=2'
 cmake --build --preset release
 cmake --build build/release --target test_firmware_security --parallel 1
 ```
@@ -131,13 +131,16 @@ coscli cp ota/manifest.json cos://codex_ota/clock-f407/manifest.json
 
 ## 7. 当前发布验证
 
-2026-08-20 已发布 Formal release 4：
+2026-08-20 已发布 `formal-1.0.1 / release 5 / security 2`：
 
-- XBIN 远端长度 162,120 字节；
-- Manifest 和 XBIN URL 均返回 HTTP 200；
-- Manifest 文件 SHA 字段与本地 XBIN 一致；
-- 当前板上也是 release 4，因此日常检查会判断为同一发布，不重复下载；
-- USART3 已用同一 XBIN 完成 A→B、B→A 和全块断点复用验证。
+- XBIN 远端长度161,776字节，下载回读SHA-256与本地文件一致；
+- Manifest 和 XBIN URL 均返回HTTP 200，Manifest字段与XBIN Header一致；
+- 实板先运行`formal-1.0.0 / release 4`，通过热点联网、读取Manifest并下载release 5；
+- 复位后Bootloader完成OTA安装，Trial应用完成健康确认并回到Normal；
+- 最终内部应用及A/B两槽均为release 5，日常检查不会重复下载；
+- USART3对release 5完成完整写入、差异写入和全块断点复用验证。
+
+release 4对象只作为历史回归包保留，不再是当前Manifest指向的发布。
 
 ## 8. 已知限制
 

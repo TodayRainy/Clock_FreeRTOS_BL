@@ -1,0 +1,12 @@
+si SWD
+speed 1000
+connect
+sleep 5000
+w4 0xE000ED0C, 0x05FA0004
+sleep 2000
+w4 0xE000ED0C, 0x05FA0004
+sleep 2000
+w4 0xE000ED0C, 0x05FA0004
+sleep 2000
+w4 0xE000ED0C, 0x05FA0004
+exit

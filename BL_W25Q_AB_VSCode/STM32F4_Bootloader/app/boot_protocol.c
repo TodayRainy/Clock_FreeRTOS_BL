@@ -32,9 +32,9 @@
 #include "elog.h"
 
 #ifdef FIRMWARE_BUILD_PROFILE_DEV
-#define BL_VERSION       "formal-1.0.0-dev"
+#define BL_VERSION       "formal-1.0.1-dev"
 #else
-#define BL_VERSION       "formal-1.0.0-prod"
+#define BL_VERSION       "formal-1.0.1-prod"
 #endif
 #define RX_TIMEOUT_MS              20u
 #define HIGH_SPEED_IDLE_TIMEOUT_MS 2000u
