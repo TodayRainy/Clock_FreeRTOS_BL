@@ -1,8 +1,9 @@
 ﻿namespace SerialUpgrader;
 
+/// <summary>Bootloader 串口帧和固件校验使用的 CRC 算法。</summary>
 public static class CRC
 {
-    static readonly ushort[] crc16tab = {
+    private static readonly ushort[] Crc16Table = {
         0x0000,0x1021,0x2042,0x3063,0x4084,0x50a5,0x60c6,0x70e7,
         0x8108,0x9129,0xa14a,0xb16b,0xc18c,0xd1ad,0xe1ce,0xf1ef,
         0x1231,0x0210,0x3273,0x2252,0x52b5,0x4294,0x72f7,0x62d6,
@@ -37,7 +38,7 @@ public static class CRC
         0x6e17,0x7e36,0x4e55,0x5e74,0x2e93,0x3eb2,0x0ed1,0x1ef0
     };
 
-    static readonly uint[] crc32tab = {
+    private static readonly uint[] Crc32Table = {
         0x00000000, 0x77073096, 0xee0e612c, 0x990951ba, 0x076dc419,
         0x706af48f, 0xe963a535, 0x9e6495a3, 0x0edb8832, 0x79dcb8a4,
         0xe0d5e91e, 0x97d2d988, 0x09b64c2b, 0x7eb17cbd, 0xe7b82d07,
@@ -92,30 +93,37 @@ public static class CRC
         0x2d02ef8d
     };
 
-    public static ushort CRC16(byte[] buf)
+    /// <summary>计算协议帧使用的 CRC-16/XMODEM。</summary>
+    public static ushort CRC16(byte[] data)
+    {
+        return CRC16(data.AsSpan());
+    }
+
+    /// <summary>计算协议帧使用的 CRC-16/XMODEM，不创建临时数组。</summary>
+    public static ushort CRC16(ReadOnlySpan<byte> data)
     {
         ushort crc = 0;
 
-        for (int i = 0; i < buf.Length; i++)
-            crc = (ushort)((crc << 8) ^ crc16tab[((crc >> 8) ^ buf[i]) & 0x00FF]);
+        foreach (byte value in data)
+            crc = (ushort)((crc << 8) ^ Crc16Table[((crc >> 8) ^ value) & 0xFF]);
 
         return crc;
     }
 
-    public static uint CRC32(byte[] buf)
+    /// <summary>计算 IEEE CRC32。</summary>
+    public static uint CRC32(byte[] data)
     {
-        return CRC32(buf.AsSpan());
+        return CRC32(data.AsSpan());
     }
 
-    /// <summary>计算一段现有缓冲区的IEEE CRC32，不为分块续传创建临时数组。</summary>
-    public static uint CRC32(ReadOnlySpan<byte> buf)
+    /// <summary>计算 IEEE CRC32，不为分块续传创建临时数组。</summary>
+    public static uint CRC32(ReadOnlySpan<byte> data)
     {
-        uint crc32val = 0;
-        crc32val ^= 0xFFFFFFFF;
+        uint crc = 0xFFFFFFFFu;
 
-        foreach (byte value in buf)
-            crc32val = crc32tab[(crc32val ^ value) & 0xFF] ^ ((crc32val >> 8) & 0x00FFFFFF);
+        foreach (byte value in data)
+            crc = Crc32Table[(byte)(crc ^ value)] ^ (crc >> 8);
 
-        return crc32val ^ 0xFFFFFFFF;
+        return crc ^ 0xFFFFFFFFu;
     }
 }

@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Text;
 
@@ -9,8 +10,9 @@ public enum MagicHeaderDataType : uint
 }
 
 /// <summary>
-/// XBIN Formal revision 1的固定320字节Header。Formal只允许ECDSA-P256签名和
-/// AES-256-GCM加密，上位机不持有解密密钥，最终安全校验始终由Bootloader执行。
+/// XBIN Formal revision 1 的固定 320 字节 Header。Formal 只允许 ECDSA-P256
+/// 签名和 AES-256-GCM 加密；上位机不持有解密密钥，最终安全校验始终由
+/// Bootloader 执行。
 /// </summary>
 public sealed class MagicHeader
 {
@@ -19,6 +21,9 @@ public sealed class MagicHeader
     private const int HeaderSize = 320;
     private const int HeaderCrcOffset = 316;
     private const int HeaderAreaSize = 4096;
+    private const uint ApplicationAddress = 0x08010000;
+    private const uint ApplicationMaxSize = 0x70000;
+    private const uint RequiredAlgorithm = 1;
 
     public uint FormatRevision { get; private set; }
     public uint SigningKeyId { get; private set; }
@@ -35,8 +40,9 @@ public sealed class MagicHeader
     public int HeaderCommitSize => HeaderSize;
 
     /// <summary>
-    /// 解析并检查本地XBIN的Formal布局和Header CRC。由于正文是密文，上位机
-    /// 不尝试验证明文摘要；签名、GCM Tag及明文CRC/SHA由Bootloader独立完成。
+    /// 解析并检查本地 XBIN 的 Formal 布局和 Header CRC。由于正文是密文，
+    /// 上位机不尝试验证明文摘要；签名、GCM Tag 及明文 CRC/SHA 由 Bootloader
+    /// 独立完成。
     /// </summary>
     public static MagicHeader? Parse(byte[] xbin)
     {
@@ -46,26 +52,26 @@ public sealed class MagicHeader
             return null;
         }
 
-        uint magic = BitConverter.ToUInt32(xbin, 0);
-        uint revision = BitConverter.ToUInt32(xbin, 4);
-        uint headerSize = BitConverter.ToUInt32(xbin, 8);
-        uint dataType = BitConverter.ToUInt32(xbin, 12);
-        uint dataOffset = BitConverter.ToUInt32(xbin, 16);
-        uint dataAddress = BitConverter.ToUInt32(xbin, 20);
-        uint dataLength = BitConverter.ToUInt32(xbin, 24);
-        uint dataCrc32 = BitConverter.ToUInt32(xbin, 28);
-        uint securityVersion = BitConverter.ToUInt32(xbin, 32);
-        uint releaseSequence = BitConverter.ToUInt32(xbin, 36);
-        uint hashAlgorithm = BitConverter.ToUInt32(xbin, 40);
-        uint signatureAlgorithm = BitConverter.ToUInt32(xbin, 44);
-        uint encryptionAlgorithm = BitConverter.ToUInt32(xbin, 48);
-        uint signingKeyId = BitConverter.ToUInt32(xbin, 52);
-        uint encryptionKeyId = BitConverter.ToUInt32(xbin, 56);
-        uint reserved0 = BitConverter.ToUInt32(xbin, 60);
+        uint magic = ReadUInt32(xbin, 0);
+        uint revision = ReadUInt32(xbin, 4);
+        uint headerSize = ReadUInt32(xbin, 8);
+        uint dataType = ReadUInt32(xbin, 12);
+        uint dataOffset = ReadUInt32(xbin, 16);
+        uint dataAddress = ReadUInt32(xbin, 20);
+        uint dataLength = ReadUInt32(xbin, 24);
+        uint dataCrc32 = ReadUInt32(xbin, 28);
+        uint securityVersion = ReadUInt32(xbin, 32);
+        uint releaseSequence = ReadUInt32(xbin, 36);
+        uint hashAlgorithm = ReadUInt32(xbin, 40);
+        uint signatureAlgorithm = ReadUInt32(xbin, 44);
+        uint encryptionAlgorithm = ReadUInt32(xbin, 48);
+        uint signingKeyId = ReadUInt32(xbin, 52);
+        uint encryptionKeyId = ReadUInt32(xbin, 56);
+        uint reserved0 = ReadUInt32(xbin, 60);
         byte[] imageSha256 = xbin[64..96];
         string version = Encoding.ASCII.GetString(xbin, 124, 64).TrimEnd('\0');
         ReadOnlySpan<byte> signature = xbin.AsSpan(188, 64);
-        uint expectedHeaderCrc = BitConverter.ToUInt32(xbin, HeaderCrcOffset);
+        uint expectedHeaderCrc = ReadUInt32(xbin, HeaderCrcOffset);
         uint actualHeaderCrc = CRC.CRC32(xbin[..HeaderCrcOffset]);
 
         if (magic != FormalMagic || revision != FormalRevision ||
@@ -80,11 +86,12 @@ public sealed class MagicHeader
             return null;
         }
         if (dataType != (uint)MagicHeaderDataType.Application ||
-            dataOffset != HeaderAreaSize || dataAddress != 0x08010000 ||
-            dataLength == 0 || dataLength > 0x70000 ||
+            dataOffset != HeaderAreaSize || dataAddress != ApplicationAddress ||
+            dataLength == 0 || dataLength > ApplicationMaxSize ||
             dataOffset + dataLength != xbin.Length ||
-            hashAlgorithm != 1 || signatureAlgorithm != 1 ||
-            encryptionAlgorithm != 1 || signingKeyId == 0 ||
+            hashAlgorithm != RequiredAlgorithm ||
+            signatureAlgorithm != RequiredAlgorithm ||
+            encryptionAlgorithm != RequiredAlgorithm || signingKeyId == 0 ||
             encryptionKeyId == 0 || reserved0 != 0 ||
             string.IsNullOrEmpty(version) ||
             signature.IndexOfAnyExcept((byte)0) < 0 ||
@@ -111,5 +118,11 @@ public sealed class MagicHeader
             ImageSha256 = imageSha256,
             Version = version,
         };
+    }
+
+    /// <summary>按 Formal 契约显式读取小端 32 位字段，不依赖主机字节序。</summary>
+    private static uint ReadUInt32(ReadOnlySpan<byte> data, int offset)
+    {
+        return BinaryPrimitives.ReadUInt32LittleEndian(data[offset..]);
     }
 }

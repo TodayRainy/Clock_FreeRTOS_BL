@@ -30,7 +30,40 @@ OTA 请求和下载进度，BCR 地址是 `0xFD00` 与 `0xFD80`。
 
 这些文件只定义稳定的二进制数据和简单规则，不包含板级业务流程。
 
-## 3. Bootloader 模块
+## 3. 主要调用关系
+
+这三个入口分别覆盖启动、日常运行和升级，定位问题时先判断当前处在哪条链路：
+
+```text
+复位
+ └─ Bootloader/main.c
+     └─ bootloader_run()
+         ├─ boot_state：读取 BCR、选择 Normal/Install/Trial/Rollback
+         ├─ firmware_slot：认证外部槽、解密并安装内部应用
+         ├─ boot_protocol：KEY2 或串口窗口内处理 USART3 命令
+         └─ jump_to_application：反初始化后跳转 WeatherClock
+
+WeatherClock/main.c
+ └─ app_init()
+     ├─ 页面任务：传感器、RTC、显示与按键
+     ├─ Wi-Fi 工作任务：独占 ESP-AT 请求/响应事务
+     ├─ OTA 任务：等首轮温湿度和天气成功后再检查 COS
+     ├─ health_monitor：只在核心任务健康时刷新 IWDG
+     └─ ab_confirm：Trial 稳定窗口满足后提交 Normal
+
+SerialUpgrader
+ └─ Transfer.UpgradeExternalAB()
+     ├─ 查询 BCR、选择非活动槽
+     ├─ 断点 CRC 扫描或完整擦写
+     ├─ USART3 流水写入 W25Q，最后提交 Header
+     └─ SLOT_ACTIVATE：由 Bootloader 完整认证后写 InstallPending
+```
+
+Bootloader 不运行 FreeRTOS，因为启动阶段只有一条受控状态机；引入调度器不会提高
+Flash 擦写或密码学吞吐，反而会扩大代码和故障面。WeatherClock 中 ESP-AT 则由单一
+工作任务串行访问，其他任务通过队列提交工作，避免多个任务交叉发送 AT 命令。
+
+## 4. Bootloader 模块
 
 ### `app/bootloader.c`
 
@@ -125,7 +158,7 @@ USART3 协议使用请求头 `0xAA`、响应头 `0x55` 和 CRC16。当前命令�
 跳转应用前会反初始化 SPI1、DMA、USART3 和 Bootloader 定时器，避免把隐含外设
 状态交给 FreeRTOS 应用。
 
-## 4. WeatherClock 模块
+## 5. WeatherClock 模块
 
 ### `app/ota.c`
 
@@ -155,7 +188,7 @@ Bootloader 消耗有限尝试次数并恢复旧活动槽。
 FreeRTOS 健康任务定期刷新 IWDG。Wi-Fi 等待循环会阻塞让出 CPU，`configASSERT`
 失败会停在不可返回处理函数中，不会因空转或错误返回造成周期重启。
 
-## 5. 上位机
+## 6. 上位机
 
 `SerialUpgrader/MagicHeader.cs` 只解析 Formal 320 字节 Header，并在开始传输前
 检查固定字段、文件长度和 Header CRC。`Transfer.cs` 负责：
@@ -171,7 +204,7 @@ FreeRTOS 健康任务定期刷新 IWDG。Wi-Fi 等待循环会阻塞让出 CPU�
 Formal 上位机不会在“不支持断点”时回退成旧协议，也不会自动制作外部快照。若
 BCR、活动槽或格式不满足要求，它会停止并要求先完成迁移或 J-Link 救援。
 
-## 6. 启动时序
+## 7. 启动时序
 
 正常升级的持久化时序：
 
@@ -192,12 +225,34 @@ Normal，新槽成为active
 - Trial 未确认：次数耗尽后进入 `RollbackPending`；
 - BCR 写掉电：上一份 CRC 有效记录仍在。
 
-## 7. 构建、大小和测试
+## 8. 关键设计取舍
+
+这些取舍也是面试时最值得讲清楚的部分：
+
+- **外部 A/B，而非内部 A/B**：STM32F407VG 内部 512 KiB Flash 无法容纳两份
+  448 KiB 应用；两颗 W25Q128 分别保存已确认版本和候选版本，内部 Flash 只运行
+  一份明文应用。
+- **应用下载、Bootloader 安装**：WeatherClock 擅长联网和后台下载，但没有安装
+  权限；Bootloader 只接收已经落在外部槽中的完整候选包，并在擦内部 Flash 前重新
+  验签、校验 GCM Tag、CRC、SHA 和向量表。
+- **Header 最后提交**：无论 USART3 还是 OTA，正文先写，固定 Header 最后写；因此
+  掉电留下的是“不可启动的半成品”，而不是貌似有效的损坏固件。
+- **BCR 双副本**：用 sequence 和 CRC 选择最新有效页，换取简单明确的 EEPROM
+  掉电恢复；没有引入文件系统或日志数据库。
+- **签名与加密分工**：ECDSA 决定“是不是受信发布”，AES-GCM 隐藏外部槽和传输中的
+  固件内容并检测密文篡改。RDP0 下物理接触者仍可经 SWD 读取 Bootloader 中的 AES
+  密钥，因此当前加密不等同于硬件级防逆向。
+- **断点续传与流水 ACK**：4 KiB CRC 找到可复用前缀，8 KiB 数据块让 PC 发送和
+  W25Q 编程重叠；最后一块改用同步确认，避免“已接收”被误解为“已落盘”。
+- **有限 Trial，而非无限自愈**：新应用必须主动证明核心任务健康；连续失败后恢复
+  已确认槽。逻辑围绕实际掉电和看门狗故障设计，没有堆叠假想恢复层。
+
+## 9. 构建、大小和测试
 
 Release 使用 `-Os` 和 `--gc-sections`，没有为个别模块强制 `-O2`。当前实测：
 
-- Bootloader 34,800 字节，占 48 KiB 的 70.80%，余 14,352 字节；
-- WeatherClock 158,024 字节，占 448 KiB 的 34.45%，余 300,728 字节。
+- Bootloader 34,896 字节，占 48 KiB 的 71.00%，余 14,256 字节；
+- WeatherClock 157,680 字节，占 448 KiB 的 34.37%，余 301,072 字节。
 
 回归入口：
 

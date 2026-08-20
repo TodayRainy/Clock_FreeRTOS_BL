@@ -113,8 +113,8 @@ def write_public_header(output: Path, point: bytes) -> None:
  * @brief Generated P-256 firmware verification key; do not edit.
  */
 
-#ifndef __FIRMWARE_PUBLIC_KEY_H__
-#define __FIRMWARE_PUBLIC_KEY_H__
+#ifndef FIRMWARE_PUBLIC_KEY_H
+#define FIRMWARE_PUBLIC_KEY_H
 
 #include <stdint.h>
 
@@ -125,7 +125,7 @@ static const uint8_t firmware_public_key[64] =
 {chr(10).join(rows)}
 }};
 
-#endif /* __FIRMWARE_PUBLIC_KEY_H__ */
+#endif /* FIRMWARE_PUBLIC_KEY_H */
 """
     output.write_text(text, encoding="utf-8", newline="\n")
 
@@ -162,8 +162,8 @@ def write_encryption_key_header(output: Path, key: bytes) -> None:
  * @brief Generated AES-256 firmware decryption key; do not edit or commit.
  */
 
-#ifndef __FIRMWARE_ENCRYPTION_KEY_H__
-#define __FIRMWARE_ENCRYPTION_KEY_H__
+#ifndef FIRMWARE_ENCRYPTION_KEY_H
+#define FIRMWARE_ENCRYPTION_KEY_H
 
 #include <stdint.h>
 
@@ -174,7 +174,7 @@ static const uint8_t firmware_encryption_key[32] =
 {chr(10).join(rows)}
 }};
 
-#endif /* __FIRMWARE_ENCRYPTION_KEY_H__ */
+#endif /* FIRMWARE_ENCRYPTION_KEY_H */
 """
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(text, encoding="utf-8", newline="\n")
@@ -183,7 +183,7 @@ static const uint8_t firmware_encryption_key[32] =
 def canonical_header(header: bytes) -> bytes:
     """Build the byte string hashed and signed for an XBIN Formal header."""
     if len(header) != HEADER_SIZE:
-        raise ValueError("signature input must be one 256-byte header")
+        raise ValueError("signature input must be one 320-byte Formal header")
     normalized = bytearray(header)
     normalized[SIGNATURE_OFFSET:SIGNATURE_OFFSET + SIGNATURE_SIZE] = bytes(SIGNATURE_SIZE)
     normalized[HEADER_CRC_OFFSET:HEADER_SIZE] = bytes(4)

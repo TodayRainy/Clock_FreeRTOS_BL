@@ -1,3 +1,8 @@
+/**
+ * @file test_weather_parser.c
+ * @brief 在宿主机上验证天气 JSON 的定点温度和最大长度字段解析。
+ */
+
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>

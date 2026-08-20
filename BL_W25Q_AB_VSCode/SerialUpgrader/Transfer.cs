@@ -1,12 +1,12 @@
-﻿using System.Diagnostics;
+﻿using System.Buffers.Binary;
+using System.Diagnostics;
 using System.IO.Ports;
 using System.Text;
 using System.Threading.Channels;
-using Timer = System.Timers.Timer;
 
 namespace SerialUpgrader;
 
-/// <summary>Bootloader持久化的A/B启动阶段。</summary>
+/// <summary>Bootloader 持久化的 A/B 启动阶段。</summary>
 public enum BootPhase : byte
 {
     Normal = 0,
@@ -15,7 +15,7 @@ public enum BootPhase : byte
     RollbackPending = 3,
 }
 
-/// <summary>一个外部固件槽的Header和全量校验结果。</summary>
+/// <summary>一个外部固件槽的 Header 和全量校验结果。</summary>
 public sealed class FirmwareSlotInfo
 {
     public bool HeaderValid { get; init; }
@@ -25,7 +25,7 @@ public sealed class FirmwareSlotInfo
     public string Version { get; init; } = string.Empty;
 }
 
-/// <summary>Bootloader返回的BCR及两个外部槽状态。</summary>
+/// <summary>Bootloader 返回的 BCR 及两个外部槽状态。</summary>
 public sealed class BootStatus
 {
     public bool StateFound { get; init; }
@@ -49,130 +49,112 @@ public sealed class FirmwareSecurityStatus
 }
 
 /// <summary>
-/// USART3 Bootloader协议客户端。普通请求执行同步的请求/响应事务；固件中间块
-/// 使用接受ACK形成收写流水线，最终同步块和SLOT_ACTIVATE完成写入及A/B提交。
+/// USART3 Bootloader 协议客户端。普通命令执行同步的请求/响应事务；固件中间块
+/// 使用接受 ACK 形成收写流水线，最终同步块和 SLOT_ACTIVATE 完成写入及 A/B 提交。
 /// </summary>
 public sealed class Transfer : IDisposable
 {
-    /* STM32F407的42 MHz APB1时钟可以无误差产生2 Mbaud。 */
+    /* STM32F407 的 42 MHz APB1 时钟可以无误差产生 2 Mbaud。 */
     public const int UpgradeBaudRate = 2_000_000;
 
-    // 协议常数
-    private const byte PACKET_HEADER_REQUEST = 0xAA;
-    private const byte PACKET_HEADER_RESPONSE = 0x55;
-    private const int DEFAULT_BAUD_RATE = 115200;
-    
-    // 数据包结构常数
-    private const int PACKET_HEADER_SIZE = 1;
-    private const int PACKET_OPCODE_SIZE = 1;
-    private const int PACKET_LENGTH_SIZE = 2;
-    private const int PACKET_CRC_SIZE = 2;
-    private const int PACKET_HEADER_OFFSET = 0;
-    private const int PACKET_OPCODE_OFFSET = 1;
-    private const int PACKET_ERRCODE_OFFSET = 2;
-    private const int PACKET_LENGTH_OFFSET = 3;
-    private const int PACKET_PAYLOAD_OFFSET = 5;
-    private const int PACKET_MIN_SIZE = PACKET_HEADER_SIZE + PACKET_OPCODE_SIZE + PACKET_LENGTH_SIZE + PACKET_CRC_SIZE;
-    
-    // 超时配置常数
-    private const int DEFAULT_TIMEOUT_SECONDS = 1;
-    // 参数长度常数
-    private const int W25_PROGRAM_PARAM_HEADER_SIZE = 7;
-    private const int W25_PROGRAM_DATA_MAX = 8192;
-    private const int RESUME_BLOCK_SIZE = 4096;
-    private const uint RESUME_ERASE_ALIGNMENT = 32 * 1024;
-    
-    public Action<double>? OnProgress;
-    public Action<string>? OnEvent;
-    private SerialPort Port;
-    private Channel<byte> DataChannel;
+    private const byte PacketRequestHeader = 0xAA;
+    private const byte PacketResponseHeader = 0x55;
+    private const int DefaultBaudRate = 115200;
 
-    enum ResponseState
+    private const int PacketCrcSize = 2;
+    private const int PacketHeaderOffset = 0;
+    private const int PacketOpcodeOffset = 1;
+    private const int PacketErrorCodeOffset = 2;
+    private const int PacketLengthOffset = 3;
+    private const int PacketPayloadOffset = 5;
+
+    private const int DefaultTimeoutSeconds = 1;
+    private const int W25ProgramParameterHeaderSize = 7;
+    private const int W25ProgramDataMax = 8192;
+    private const int ResumeBlockSize = 4096;
+    private const uint ResumeEraseAlignment = 32u * 1024u;
+
+    private readonly SerialPort port;
+    private readonly Channel<byte> dataChannel;
+
+    public event Action<double>? OnProgress;
+    public event Action<string>? OnEvent;
+
+    private enum ResponseState
     {
-        HEADER,
-        OPCODE,
-        ERRCODE,
-        LENGTH,
-        PAYLOAD,
-        CRC16,
+        Header,
+        Opcode,
+        ErrorCode,
+        Length,
+        Payload,
+        Crc16,
     }
 
-    enum OPCODE
+    private enum Opcode : byte
     {
-        INQUERY = 0x01,
-        SET_BAUD = 0x02,
-        RESET = 0x21,
-        BOOT = 0x22,
-        W25_READ = 0x41,
-        W25_ERASE = 0x42,
-        W25_PROGRAM = 0x43,
-        W25_PROGRAM_ASYNC = 0x44,
-        SLOT_STATUS = 0x50,
-        SLOT_ACTIVATE = 0x52,
-        SLOT_STATUS_FAST = 0x54,
-        SECURITY_STATUS = 0x55,
-        SLOT_RESUME_SCAN = 0x56,
+        Inquiry = 0x01,
+        SetBaud = 0x02,
+        Reset = 0x21,
+        Boot = 0x22,
+        W25Read = 0x41,
+        W25Erase = 0x42,
+        W25Program = 0x43,
+        W25ProgramAsync = 0x44,
+        SlotStatus = 0x50,
+        SlotActivate = 0x52,
+        SlotStatusFast = 0x54,
+        SecurityStatus = 0x55,
+        SlotResumeScan = 0x56,
     }
 
-    enum INQUIRY
+    private enum Inquiry : byte
     {
-        GET_VERSION = 0,
-        GET_MTU = 1,
-    }
-    enum ERRCODE
-{
-        OK = 0,
-        OPCODE,
-        OVERFLOW,
-        TIMEOUT,
-        FORMAT,
-        VERIFY,
-        PARAM,
-        DENIED,
-        UNKNOWN = 0xff,
+        GetVersion = 0,
+        GetMtu = 1,
     }
 
-    class Response
+    private enum ErrorCode : byte
     {
-        public OPCODE? Opcode;
-        public ERRCODE? Errcode;
-        public byte[]? Param;
+        Ok = 0,
+        Opcode,
+        Overflow,
+        Timeout,
+        Format,
+        Verify,
+        Parameter,
+        Denied,
+        Unknown = 0xFF,
+    }
 
-        public Response(OPCODE? opcode, ERRCODE? errcode, byte[]? param)
+    private sealed record Response(ErrorCode ErrorCode, byte[] Payload);
+
+    private readonly record struct ResumeScanResult(bool Success, uint Offset);
+
+    public Transfer(string portName)
+    {
+        port = new SerialPort
         {
-            Opcode = opcode;
-            Errcode = errcode;
-            Param = param;
-        }
+            PortName = portName,
+            BaudRate = DefaultBaudRate,
+            /* 为单个 8 KiB 请求及 USB 驱动分段预留充足的主机发送缓冲。 */
+            WriteBufferSize = 32 * 1024,
+        };
+        port.DataReceived += OnDataReceived;
+        dataChannel = Channel.CreateUnbounded<byte>();
     }
-
-    public Transfer(string port)
-    {
-        Port = new();
-        Port.PortName = port;
-        Port.BaudRate = DEFAULT_BAUD_RATE;
-        /* 为单个8 KiB请求及USB驱动分段预留充足的主机发送缓冲。 */
-        Port.WriteBufferSize = 32 * 1024;
-        Port.DataReceived += OnDataReceived;
-
-        DataChannel = Channel.CreateUnbounded<byte>();
-    }
-
-    readonly record struct ResumeScanResult(bool Supported, bool Success,
-                                            uint Offset);
 
     /// <summary>
-    /// 打开一次串口会话。升级过程保持同一连接，避免每个4 KiB数据包都让
-    /// Windows和USB-TTL重新打开设备。
+    /// 打开一次串口会话。升级过程保持同一连接，避免每个 4 KiB 数据包都让
+    /// Windows 和 USB-TTL 重新打开设备。
     /// </summary>
     public bool Open()
     {
-        if (Port.IsOpen)
+        if (port.IsOpen)
             return true;
 
         try
         {
-            Port.Open();
+            port.Open();
             return true;
         }
         catch (Exception ex)
@@ -187,132 +169,112 @@ public sealed class Transfer : IDisposable
     {
         try
         {
-            if (Port.IsOpen)
-                Port.Close();
+            if (port.IsOpen)
+                port.Close();
         }
         finally
         {
-            Port.Dispose();
+            port.Dispose();
         }
     }
 
-    void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
+    private void OnDataReceived(object sender, SerialDataReceivedEventArgs e)
     {
-        byte[] recv = new byte[Port.BytesToRead];
-        Port.Read(recv, 0, recv.Length);
-        foreach (byte b in recv) DataChannel.Writer.TryWrite(b);
+        int available = port.BytesToRead;
+        if (available == 0)
+            return;
+
+        byte[] received = new byte[available];
+        int count = port.Read(received, 0, received.Length);
+        for (int index = 0; index < count; index++)
+            dataChannel.Writer.TryWrite(received[index]);
     }
 
-    async Task<Response?> WaitResponse(OPCODE opcode, TimeSpan timeout)
+    /// <summary>从串口字节流中接收并校验指定 Opcode 的一帧响应。</summary>
+    private async Task<Response?> WaitResponse(Opcode opcode, TimeSpan timeout)
     {
-        ERRCODE errcode = ERRCODE.UNKNOWN;
-        byte[]? param = null;
-
-        List<byte> response = [];
-        ResponseState state = ResponseState.HEADER;
-        int payload_length = 0;
-
-        CancellationTokenSource cancelTokenSource = new();
-        Timer timeouter = new Timer();
-        timeouter.Interval = timeout.TotalMilliseconds;
-        timeouter.AutoReset = false;
-        timeouter.Elapsed += (sender, e) =>
-        {
-            cancelTokenSource.Cancel();
-        };
-        timeouter.Start();
-
-        DateTime last_rx_time = DateTime.Now;
+        ErrorCode errorCode = ErrorCode.Unknown;
+        List<byte> frame = [];
+        ResponseState state = ResponseState.Header;
+        int payloadLength = 0;
+        using CancellationTokenSource timeoutSource = new(timeout);
 
         try
         {
-            await foreach (byte data in DataChannel.Reader.ReadAllAsync(cancelTokenSource.Token))
+            await foreach (byte value in dataChannel.Reader.ReadAllAsync(timeoutSource.Token))
             {
-                if (DateTime.Now - last_rx_time > timeout)
-                {
-                    if (response.Count > 0)
-                        OnEvent?.Invoke("rx timeout, reset state machine");
-                    response.Clear();
-                    state = ResponseState.HEADER;
-                }
-                last_rx_time = DateTime.Now;
-
-                Trace.WriteLine($"recv: {data:X2}");
-
-                // 字节接收状态机处理
-                response.Add(data);
+                Trace.WriteLine($"recv: {value:X2}");
+                frame.Add(value);
                 switch (state)
                 {
-                    case ResponseState.HEADER:
-                        if (response[PACKET_HEADER_OFFSET] == PACKET_HEADER_RESPONSE)
+                    case ResponseState.Header:
+                        if (frame[PacketHeaderOffset] == PacketResponseHeader)
                         {
-                            Trace.WriteLine("header ok");
-                            state = ResponseState.OPCODE;
+                            state = ResponseState.Opcode;
                         }
                         else
                         {
-                            response.Clear();
-                            state = ResponseState.HEADER;
+                            frame.Clear();
                         }
                         break;
-                    case ResponseState.OPCODE:
-                        if (response[PACKET_OPCODE_OFFSET] == (byte)opcode)
+
+                    case ResponseState.Opcode:
+                        if (frame[PacketOpcodeOffset] == (byte)opcode)
                         {
-                            Trace.WriteLine($"opcode ok: {opcode}");
-                            state = ResponseState.ERRCODE;
+                            state = ResponseState.ErrorCode;
                         }
                         else
                         {
-                            OnEvent?.Invoke($"opcode invalid: {response[PACKET_OPCODE_OFFSET]:X2}");
-                            response.Clear();
-                            state = ResponseState.HEADER;
+                            OnEvent?.Invoke(
+                                $"opcode invalid: {frame[PacketOpcodeOffset]:X2}");
+                            frame.Clear();
+                            state = ResponseState.Header;
                         }
                         break;
-                    case ResponseState.ERRCODE:
+
+                    case ResponseState.ErrorCode:
+                        errorCode = (ErrorCode)frame[PacketErrorCodeOffset];
+                        state = ResponseState.Length;
+                        break;
+
+                    case ResponseState.Length:
+                        if (frame.Count == PacketPayloadOffset)
                         {
-                            errcode = (ERRCODE)response[PACKET_ERRCODE_OFFSET];
-                            Trace.WriteLine($"errcode ok: {errcode}");
-                            state = ResponseState.LENGTH;
+                            payloadLength = frame[PacketLengthOffset] |
+                                            frame[PacketLengthOffset + 1] << 8;
+                            state = payloadLength > 0
+                                ? ResponseState.Payload
+                                : ResponseState.Crc16;
                         }
                         break;
-                    case ResponseState.LENGTH:
-                        if (response.Count == PACKET_PAYLOAD_OFFSET)
-                        {
-                            payload_length = BitConverter.ToUInt16(response.ToArray(), PACKET_LENGTH_OFFSET);
-                            Trace.WriteLine($"length ok: {payload_length}");
-                            if (payload_length > 0)
-                                state = ResponseState.PAYLOAD;
-                            else
-                                state = ResponseState.CRC16;
-                        }
+
+                    case ResponseState.Payload:
+                        if (frame.Count == PacketPayloadOffset + payloadLength)
+                            state = ResponseState.Crc16;
                         break;
-                    case ResponseState.PAYLOAD:
-                        if (response.Count == PACKET_PAYLOAD_OFFSET + payload_length)
+
+                    case ResponseState.Crc16:
+                        if (frame.Count == PacketPayloadOffset + payloadLength + PacketCrcSize)
                         {
-                            Trace.WriteLine("payload ok");
-                            state = ResponseState.CRC16;
-                        }
-                        break;
-                    case ResponseState.CRC16:
-                        if (response.Count == PACKET_PAYLOAD_OFFSET + payload_length + PACKET_CRC_SIZE)
-                        {
-                            ushort crc = BitConverter.ToUInt16(response.ToArray(), PACKET_PAYLOAD_OFFSET + payload_length);
-                            ushort ccrc = CRC.CRC16(response.Take(response.Count - PACKET_CRC_SIZE).ToArray());
-                            if (ccrc == crc)
+                            byte[] packet = frame.ToArray();
+                            ushort expectedCrc = BinaryPrimitives.ReadUInt16LittleEndian(
+                                packet.AsSpan(PacketPayloadOffset + payloadLength));
+                            ushort actualCrc = CRC.CRC16(packet.AsSpan(0,
+                                packet.Length - PacketCrcSize));
+                            if (actualCrc != expectedCrc)
                             {
-                                param = response.Skip(PACKET_PAYLOAD_OFFSET).Take(payload_length).ToArray();
-                                Trace.WriteLine($"crc16 ok: {crc:X4}");
-                                Trace.WriteLine($"packet received: opcode={opcode}, length={payload_length}");
-                                return new Response(opcode, errcode, param);
-                            }
-                            else
-                            {
-                                OnEvent?.Invoke($"crc16 error: expected {crc:X4}, got {ccrc:X4}");
+                                OnEvent?.Invoke(
+                                    $"crc16 error: expected {expectedCrc:X4}, got {actualCrc:X4}");
                                 return null;
                             }
+
+                            byte[] payload = packet
+                                .AsSpan(PacketPayloadOffset, payloadLength)
+                                .ToArray();
+                            Trace.WriteLine(
+                                $"packet received: opcode={opcode}, length={payloadLength}");
+                            return new Response(errorCode, payload);
                         }
-                        break;
-                    default:
                         break;
                 }
             }
@@ -325,49 +287,51 @@ public sealed class Transfer : IDisposable
         {
             OnEvent?.Invoke($"WaitResponse exception: {ex.Message}");
         }
-        finally
-        {
-            timeouter.Stop();
-            timeouter.Dispose();
-            cancelTokenSource.Dispose();
-        }
 
         return null;
     }
 
-    byte[] BuildPacket(OPCODE opcode, byte[]? param)
+    /// <summary>按小端协议布局构造一帧请求。</summary>
+    private static byte[] BuildPacket(Opcode opcode, byte[]? payload)
     {
-        List<byte> packet = [];
-        packet.Add(PACKET_HEADER_REQUEST);
-        packet.Add((byte)opcode);
-        packet.AddRange(BitConverter.GetBytes((ushort)(param?.Length ?? 0)));
-        if (param != null) packet.AddRange(param);
-        ushort crc = CRC.CRC16(packet.ToArray());
-        packet.AddRange(BitConverter.GetBytes(crc));
+        int payloadLength = payload?.Length ?? 0;
+        byte[] packet = new byte[PacketPayloadOffset + payloadLength + PacketCrcSize];
 
-        return packet.ToArray();
+        packet[PacketHeaderOffset] = PacketRequestHeader;
+        packet[PacketOpcodeOffset] = (byte)opcode;
+        BinaryPrimitives.WriteUInt16LittleEndian(
+            packet.AsSpan(PacketLengthOffset), checked((ushort)payloadLength));
+        payload?.CopyTo(packet, PacketPayloadOffset);
+
+        ushort crc = CRC.CRC16(packet.AsSpan(0, packet.Length - PacketCrcSize));
+        BinaryPrimitives.WriteUInt16LittleEndian(packet.AsSpan(packet.Length - PacketCrcSize), crc);
+        return packet;
     }
 
-    async Task<Response?> PacketRequest(OPCODE opcode, byte[]? param, TimeSpan timeout = default)
+    /// <summary>发送一帧请求，并等待匹配 Opcode 的完整响应。</summary>
+    private async Task<Response?> PacketRequest(Opcode opcode,
+                                                byte[]? payload,
+                                                TimeSpan timeout = default)
     {
         bool openedHere = false;
 
         if (timeout == default)
-            timeout = TimeSpan.FromSeconds(DEFAULT_TIMEOUT_SECONDS);
+            timeout = TimeSpan.FromSeconds(DefaultTimeoutSeconds);
 
         try
         {
-            byte[] packet = BuildPacket(opcode, param);
-            while (DataChannel.Reader.TryRead(out _)) { }
-            if (!Port.IsOpen)
+            byte[] packet = BuildPacket(opcode, payload);
+            while (dataChannel.Reader.TryRead(out _))
+            {
+            }
+            if (!port.IsOpen)
             {
                 if (!Open())
                     return null;
                 openedHere = true;
             }
-            Port.Write(packet, 0, packet.Length);
-            Response? response = await WaitResponse(opcode, timeout);
-            return response;
+            port.Write(packet, 0, packet.Length);
+            return await WaitResponse(opcode, timeout);
         }
         catch (Exception ex)
         {
@@ -378,8 +342,8 @@ public sealed class Transfer : IDisposable
         {
             try
             {
-                if (openedHere && Port.IsOpen)
-                    Port.Close();
+                if (openedHere && port.IsOpen)
+                    port.Close();
             }
             catch (Exception ex)
             {
@@ -388,46 +352,45 @@ public sealed class Transfer : IDisposable
         }
     }
 
-    /// <summary>查询Bootloader版本字符串。</summary>
+    /// <summary>查询 Bootloader 版本字符串。</summary>
     public async Task<string?> GetBootloaderVersion()
     {
-        Response? response = await PacketRequest(OPCODE.INQUERY, [(byte)INQUIRY.GET_VERSION]);
-        
-        if (response != null && response.Errcode == ERRCODE.OK && response.Param != null)
-        {
-            string version = Encoding.ASCII.GetString(response.Param);
-            return version;
-        }
-        
-        return null;
+        Response? response = await PacketRequest(Opcode.Inquiry, [(byte)Inquiry.GetVersion]);
+
+        return response?.ErrorCode == ErrorCode.Ok
+            ? Encoding.ASCII.GetString(response.Payload)
+            : null;
     }
 
-    /// <summary>查询请求帧允许的最大Payload长度。</summary>
+    /// <summary>查询请求帧允许的最大 Payload 长度。</summary>
     public async Task<int?> GetBootloaderMTU()
     {
-        Response? response = await PacketRequest(OPCODE.INQUERY, [(byte)INQUIRY.GET_MTU]);
+        Response? response = await PacketRequest(Opcode.Inquiry, [(byte)Inquiry.GetMtu]);
 
-        if (response != null && response.Errcode == ERRCODE.OK && response.Param != null)
-        {
-            int mtu = BitConverter.ToUInt16(response.Param);
-            return mtu;
-        }
-
-        return null;
+        return response?.ErrorCode == ErrorCode.Ok && response.Payload.Length == sizeof(ushort)
+            ? BinaryPrimitives.ReadUInt16LittleEndian(response.Payload)
+            : null;
     }
 
     /// <summary>
-    /// 在115200默认链路收到Bootloader ACK后，把当前会话切到更高波特率。
-    /// 切换后立即查询一次版本，确认PC串口和MCU确实工作在同一速率。
+    /// 在 115200 默认链路收到 Bootloader ACK 后，把当前会话切到更高波特率。
+    /// 切换后立即查询一次版本，确认 PC 串口和 MCU 确实工作在同一速率。
     /// </summary>
     public async Task<bool> SetBaudRate(int baudRate)
     {
-        if (baudRate == DEFAULT_BAUD_RATE)
+        if (baudRate <= 0)
+        {
+            OnEvent?.Invoke("波特率必须大于 0");
+            return false;
+        }
+
+        if (baudRate == DefaultBaudRate)
             return true;
 
-        Response? response = await PacketRequest(OPCODE.SET_BAUD,
-                                                 BitConverter.GetBytes((uint)baudRate));
-        if (response?.Errcode != ERRCODE.OK)
+        byte[] payload = new byte[sizeof(uint)];
+        BinaryPrimitives.WriteUInt32LittleEndian(payload, checked((uint)baudRate));
+        Response? response = await PacketRequest(Opcode.SetBaud, payload);
+        if (response?.ErrorCode != ErrorCode.Ok)
         {
             OnEvent?.Invoke($"Bootloader不支持切换到 {baudRate} baud");
             return false;
@@ -435,9 +398,11 @@ public sealed class Transfer : IDisposable
 
         try
         {
-            Port.BaudRate = baudRate;
-            while (DataChannel.Reader.TryRead(out _)) { }
-            Port.DiscardInBuffer();
+            port.BaudRate = baudRate;
+            while (dataChannel.Reader.TryRead(out _))
+            {
+            }
+            port.DiscardInBuffer();
         }
         catch (Exception ex)
         {
@@ -457,32 +422,33 @@ public sealed class Transfer : IDisposable
     }
 
     /// <summary>
-    /// 使用一次最小的W25Q只读请求探测工程维护接口是否开放。
-    /// true表示允许，false表示Bootloader明确返回DENIED，null表示链路或协议异常。
-    /// 此方法只读取A槽首字节，不会擦除或改写任何存储内容。
+    /// 使用一次最小的 W25Q 只读请求探测工程维护接口是否开放。
+    /// true 表示允许，false 表示 Bootloader 明确返回 DENIED，null 表示链路或协议异常。
+    /// 此方法只读取 A 槽首字节，不会擦除或改写任何存储内容。
     /// </summary>
     public async Task<bool?> IsMaintenanceReadAllowed()
     {
-        byte[] param = new byte[7];
-        param[0] = 0;                         // W25Q芯片0（A槽所在芯片）
-        BitConverter.GetBytes(0u).CopyTo(param, 1);
-        BitConverter.GetBytes((ushort)1).CopyTo(param, 5);
+        byte[] payload = new byte[7];
+        payload[0] = 0; // W25Q 芯片 0（A 槽所在芯片）
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(1), 0u);
+        BinaryPrimitives.WriteUInt16LittleEndian(payload.AsSpan(5), 1);
 
-        Response? response = await PacketRequest(OPCODE.W25_READ, param,
+        Response? response = await PacketRequest(Opcode.W25Read, payload,
                                                  TimeSpan.FromSeconds(2));
-        if (response?.Errcode == ERRCODE.OK)
+        if (response?.ErrorCode == ErrorCode.Ok)
             return true;
-        if (response?.Errcode == ERRCODE.DENIED)
+        if (response?.ErrorCode == ErrorCode.Denied)
             return false;
         return null;
     }
 
-    /// <summary>读取BCR以及两个外部槽的Header和全量校验结果。</summary>
+    /// <summary>读取 BCR 以及两个外部槽的 Header 和全量校验结果。</summary>
     public async Task<BootStatus?> GetBootStatus()
     {
-        Response? response = await PacketRequest(OPCODE.SLOT_STATUS, null, TimeSpan.FromSeconds(15));
-        byte[]? data = response?.Param;
-        if (response?.Errcode != ERRCODE.OK || data == null || data.Length != 102)
+        Response? response = await PacketRequest(
+            Opcode.SlotStatus, null, TimeSpan.FromSeconds(15));
+        byte[]? data = response?.Payload;
+        if (response?.ErrorCode != ErrorCode.Ok || data?.Length != 102)
             return null;
 
         FirmwareSlotInfo[] slots = new FirmwareSlotInfo[2];
@@ -493,9 +459,9 @@ public sealed class Transfer : IDisposable
             {
                 HeaderValid = data[offset] != 0,
                 FullValid = data[offset + 1] != 0,
-                DataLength = BitConverter.ToUInt32(data, offset + 2),
-                DataCrc32 = BitConverter.ToUInt32(data, offset + 6),
-                Version = Encoding.ASCII.GetString(data, offset + 10, 32).TrimEnd('\0')
+                DataLength = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset + 2)),
+                DataCrc32 = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(offset + 6)),
+                Version = Encoding.ASCII.GetString(data, offset + 10, 32).TrimEnd('\0'),
             };
         }
 
@@ -506,25 +472,25 @@ public sealed class Transfer : IDisposable
             ActiveSlot = data[2],
             PendingSlot = data[3],
             AttemptsLeft = data[4],
-            Sequence = BitConverter.ToUInt32(data, 5),
-            ActiveCrc32 = BitConverter.ToUInt32(data, 9),
-            PendingCrc32 = BitConverter.ToUInt32(data, 13),
+            Sequence = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(5)),
+            ActiveCrc32 = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(9)),
+            PendingCrc32 = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(13)),
             InternalValid = data[101] != 0,
-            Slots = slots
+            Slots = slots,
         };
     }
 
     /// <summary>
-    /// 只读取经过EEPROM双副本及CRC校验的BCR状态，不扫描A/B槽的数据区。
-    /// 返回null表示当前Bootloader不支持该命令或链路异常；调用方可以回退到
-    /// 完整GetBootStatus。固件是否可安装仍由SLOT_ACTIVATE的全量CRC决定。
+    /// 只读取经过 EEPROM 双副本及 CRC 校验的 BCR 状态，不扫描 A/B 槽的数据区。
+    /// Formal 升级流程依赖该命令；返回 null 时停止升级，不擦写目标槽。
+    /// 固件是否可安装仍由 SLOT_ACTIVATE 的全量 CRC 和安全校验决定。
     /// </summary>
-    async Task<BootStatus?> GetBootStatusFast()
+    private async Task<BootStatus?> GetBootStatusFast()
     {
-        Response? response = await PacketRequest(OPCODE.SLOT_STATUS_FAST, null,
+        Response? response = await PacketRequest(Opcode.SlotStatusFast, null,
                                                  TimeSpan.FromSeconds(2));
-        byte[]? data = response?.Param;
-        if (response?.Errcode != ERRCODE.OK || data == null || data.Length != 17)
+        byte[]? data = response?.Payload;
+        if (response?.ErrorCode != ErrorCode.Ok || data?.Length != 17)
             return null;
 
         return new BootStatus
@@ -534,117 +500,102 @@ public sealed class Transfer : IDisposable
             ActiveSlot = data[2],
             PendingSlot = data[3],
             AttemptsLeft = data[4],
-            Sequence = BitConverter.ToUInt32(data, 5),
-            ActiveCrc32 = BitConverter.ToUInt32(data, 9),
-            PendingCrc32 = BitConverter.ToUInt32(data, 13),
-            Slots = []
+            Sequence = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(5)),
+            ActiveCrc32 = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(9)),
+            PendingCrc32 = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(13)),
+            Slots = [],
         };
     }
 
     /// <summary>
-    /// 查询设备防降级下限。旧Bootloader不支持该命令时返回null，不影响原有升级。
+    /// 查询设备防降级下限。返回 null 表示链路或 Formal 协议异常。
     /// </summary>
     public async Task<FirmwareSecurityStatus?> GetFirmwareSecurityStatus()
     {
-        Response? response = await PacketRequest(OPCODE.SECURITY_STATUS, null,
+        Response? response = await PacketRequest(Opcode.SecurityStatus, null,
                                                  TimeSpan.FromSeconds(2));
-        byte[]? data = response?.Param;
-        if (response?.Errcode != ERRCODE.OK || data == null || data.Length != 9)
+        byte[]? data = response?.Payload;
+        if (response?.ErrorCode != ErrorCode.Ok || data?.Length != 9)
             return null;
 
         return new FirmwareSecurityStatus
         {
-            MinimumVersion = BitConverter.ToUInt32(data, 0),
-            PendingVersion = BitConverter.ToUInt32(data, 4),
-            DowngradeAuthorized = data[8] != 0
+            MinimumVersion = BinaryPrimitives.ReadUInt32LittleEndian(data),
+            PendingVersion = BinaryPrimitives.ReadUInt32LittleEndian(data.AsSpan(4)),
+            DowngradeAuthorized = data[8] != 0,
         };
     }
 
     /// <summary>
-    /// 获取升级选槽所需的最小状态。旧Bootloader不认识快速命令时自动使用原有
-    /// 完整状态命令，因此新上位机仍可维护已经部署的旧版本。
-    /// </summary>
-    async Task<BootStatus?> GetUpgradeBootStatus()
-    {
-        BootStatus? status = await GetBootStatusFast();
-        if (status != null)
-            return status;
-
-        OnEvent?.Invoke("快速状态查询不可用，回退到完整A/B检查");
-        return await GetBootStatus();
-    }
-
-    /// <summary>
-    /// 构造断点扫描请求。CRC列表只覆盖应用数据区，每个元素对应一个4 KiB块，
+    /// 构造断点扫描请求。CRC 列表只覆盖应用数据区，每个元素对应一个 4 KiB 块，
     /// 最后一块按实际数据长度计算，不包含扇区尾部的擦除填充。
     /// </summary>
-    static byte[] BuildResumeScanRequest(byte slot, byte[] xbin,
-                                         MagicHeader header)
+    private static byte[] BuildResumeScanRequest(byte slot, byte[] xbin,
+                                                  MagicHeader header)
     {
         int dataOffset = checked((int)header.DataOffset);
         int dataLength = checked((int)header.DataLength);
-        int blockCount = (dataLength + RESUME_BLOCK_SIZE - 1) /
-                         RESUME_BLOCK_SIZE;
-        byte[] param = new byte[7 + blockCount * sizeof(uint)];
+        int blockCount = (dataLength + ResumeBlockSize - 1) /
+                         ResumeBlockSize;
+        byte[] payload = new byte[7 + blockCount * sizeof(uint)];
 
-        param[0] = slot;
-        BitConverter.GetBytes(header.DataLength).CopyTo(param, 1);
-        BitConverter.GetBytes((ushort)blockCount).CopyTo(param, 5);
+        payload[0] = slot;
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(1), header.DataLength);
+        BinaryPrimitives.WriteUInt16LittleEndian(
+            payload.AsSpan(5), checked((ushort)blockCount));
         for (int block = 0; block < blockCount; ++block)
         {
-            int offset = block * RESUME_BLOCK_SIZE;
-            int size = Math.Min(RESUME_BLOCK_SIZE, dataLength - offset);
+            int offset = block * ResumeBlockSize;
+            int size = Math.Min(ResumeBlockSize, dataLength - offset);
             uint crc = CRC.CRC32(xbin.AsSpan(dataOffset + offset, size));
-            BitConverter.GetBytes(crc).CopyTo(param, 7 + block * sizeof(uint));
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                payload.AsSpan(7 + block * sizeof(uint)), crc);
         }
-        return param;
+        return payload;
     }
 
     /// <summary>
-    /// 让Bootloader使非活动槽Header失效，并返回与当前XBIN连续匹配的数据末端。
-    /// 旧Bootloader明确返回OPCODE时标记为不支持；超时或其他错误不会被误当成
-    /// 旧版本，因为此时继续擦除可能掩盖真实链路故障。
+    /// 让 Bootloader 使非活动槽 Header 失效，并返回与当前 XBIN 连续匹配的数据末端。
+    /// 命令失败时直接终止升级，不进入擦除阶段。
     /// </summary>
-    async Task<ResumeScanResult> ScanResumeOffset(byte slot, byte[] xbin,
-                                                  MagicHeader header)
+    private async Task<ResumeScanResult> ScanResumeOffset(byte slot, byte[] xbin,
+                                                           MagicHeader header)
     {
-        byte[] param = BuildResumeScanRequest(slot, xbin, header);
-        Response? response = await PacketRequest(OPCODE.SLOT_RESUME_SCAN, param,
+        byte[] payload = BuildResumeScanRequest(slot, xbin, header);
+        Response? response = await PacketRequest(Opcode.SlotResumeScan, payload,
                                                  TimeSpan.FromSeconds(5));
         if (response == null)
-            return new ResumeScanResult(true, false, 0);
-        if (response.Errcode == ERRCODE.OPCODE)
-            return new ResumeScanResult(false, true, 0);
-        if (response.Errcode != ERRCODE.OK || response.Param?.Length != 4)
-            return new ResumeScanResult(true, false, 0);
+            return new ResumeScanResult(false, 0);
+        if (response.ErrorCode != ErrorCode.Ok || response.Payload.Length != 4)
+            return new ResumeScanResult(false, 0);
 
-        uint offset = BitConverter.ToUInt32(response.Param, 0);
+        uint offset = BinaryPrimitives.ReadUInt32LittleEndian(response.Payload);
         uint dataEnd = header.DataOffset + header.DataLength;
         bool alignedBlock = offset >= header.DataOffset && offset < dataEnd &&
-                            (offset - header.DataOffset) % RESUME_BLOCK_SIZE == 0;
+                            (offset - header.DataOffset) % ResumeBlockSize == 0;
         if (offset != dataEnd && !alignedBlock)
-            return new ResumeScanResult(true, false, 0);
+            return new ResumeScanResult(false, 0);
 
-        return new ResumeScanResult(true, true, offset);
+        return new ResumeScanResult(true, offset);
     }
 
-    async Task<bool> W25Erase(byte slot, uint address, uint size)
+    private async Task<bool> W25Erase(byte slot, uint address, uint size)
     {
-        byte[] param = new byte[9];
-        param[0] = slot;
-        BitConverter.GetBytes(address).CopyTo(param, 1);
-        BitConverter.GetBytes(size).CopyTo(param, 5);
-        Response? response = await PacketRequest(OPCODE.W25_ERASE, param,
+        byte[] payload = new byte[9];
+        payload[0] = slot;
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(1), address);
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(5), size);
+        Response? response = await PacketRequest(Opcode.W25Erase, payload,
                                                  TimeSpan.FromSeconds(20));
-        return response?.Errcode == ERRCODE.OK;
+        return response?.ErrorCode == ErrorCode.Ok;
     }
 
-    async Task<bool> W25Program(byte slot, uint address, byte[] data, int mtu,
-                                int progressBase, int progressTotal)
+    private async Task<bool> W25Program(byte slot, uint address, byte[] data, int mtu,
+                                        int progressBase, int progressTotal)
     {
         int offset = 0;
-        int chunkMax = Math.Min(W25_PROGRAM_DATA_MAX,
-                                mtu - W25_PROGRAM_PARAM_HEADER_SIZE);
+        int chunkMax = Math.Min(W25ProgramDataMax,
+                                mtu - W25ProgramParameterHeaderSize);
 
         if (chunkMax <= 0)
             return false;
@@ -652,22 +603,24 @@ public sealed class Transfer : IDisposable
         while (offset < data.Length)
         {
             int chunk = Math.Min(chunkMax, data.Length - offset);
-            byte[] param = new byte[W25_PROGRAM_PARAM_HEADER_SIZE + chunk];
-            param[0] = slot;
-            BitConverter.GetBytes(address + (uint)offset).CopyTo(param, 1);
-            BitConverter.GetBytes((ushort)chunk).CopyTo(param, 5);
-            Array.Copy(data, offset, param, W25_PROGRAM_PARAM_HEADER_SIZE, chunk);
+            byte[] payload = new byte[W25ProgramParameterHeaderSize + chunk];
+            payload[0] = slot;
+            BinaryPrimitives.WriteUInt32LittleEndian(
+                payload.AsSpan(1), address + (uint)offset);
+            BinaryPrimitives.WriteUInt16LittleEndian(
+                payload.AsSpan(5), checked((ushort)chunk));
+            Array.Copy(data, offset, payload, W25ProgramParameterHeaderSize, chunk);
 
             /*
              * 中间块收到的是“CRC和参数已接受”ACK：MCU随后写当前块，PC同时
              * 发送下一块。最后一块改用同步命令，等所有实际写入完成后才返回。
              */
-            OPCODE opcode = offset + chunk < data.Length
-                            ? OPCODE.W25_PROGRAM_ASYNC
-                            : OPCODE.W25_PROGRAM;
-            Response? response = await PacketRequest(opcode, param,
+            Opcode opcode = offset + chunk < data.Length
+                ? Opcode.W25ProgramAsync
+                : Opcode.W25Program;
+            Response? response = await PacketRequest(opcode, payload,
                                                      TimeSpan.FromSeconds(5));
-            if (response?.Errcode != ERRCODE.OK)
+            if (response?.ErrorCode != ErrorCode.Ok)
                 return false;
 
             offset += chunk;
@@ -677,17 +630,17 @@ public sealed class Transfer : IDisposable
         return true;
     }
 
-    async Task<bool> ActivateSlot(byte slot, uint expectedDataCrc)
+    private async Task<bool> ActivateSlot(byte slot, uint expectedDataCrc)
     {
-        byte[] param = new byte[5];
-        param[0] = slot;
-        BitConverter.GetBytes(expectedDataCrc).CopyTo(param, 1);
+        byte[] payload = new byte[5];
+        payload[0] = slot;
+        BinaryPrimitives.WriteUInt32LittleEndian(payload.AsSpan(1), expectedDataCrc);
 
-        Response? response = await PacketRequest(OPCODE.SLOT_ACTIVATE, param,
+        Response? response = await PacketRequest(Opcode.SlotActivate, payload,
                                                  TimeSpan.FromSeconds(15));
-        if (response?.Errcode == ERRCODE.DENIED)
+        if (response?.ErrorCode == ErrorCode.Denied)
             OnEvent?.Invoke("Bootloader拒绝安装：固件安全版本低于设备下限，需使用新签名回退包或KEY2授权");
-        return response?.Errcode == ERRCODE.OK;
+        return response?.ErrorCode == ErrorCode.Ok;
     }
 
     /// <summary>
@@ -704,7 +657,7 @@ public sealed class Transfer : IDisposable
     {
         Stopwatch totalTimer = Stopwatch.StartNew();
         Stopwatch stepTimer = Stopwatch.StartNew();
-        BootStatus? status = await GetUpgradeBootStatus();
+        BootStatus? status = await GetBootStatusFast();
         OnEvent?.Invoke($"读取A/B状态耗时: {stepTimer.Elapsed.TotalSeconds:F2} 秒");
         if (status == null)
         {
@@ -734,22 +687,15 @@ public sealed class Transfer : IDisposable
         {
             stepTimer.Restart();
             ResumeScanResult scan = await ScanResumeOffset(target, xbin, header);
-            if (!scan.Supported)
-            {
-                OnEvent?.Invoke("当前Bootloader不是Formal协议，拒绝使用旧升级路径");
-                return false;
-            }
-            else if (!scan.Success)
+            if (!scan.Success)
             {
                 OnEvent?.Invoke("断点扫描失败，未擦写活动固件");
                 return false;
             }
-            else
-            {
-                resumable = true;
-                resumeOffset = scan.Offset;
-                OnEvent?.Invoke($"断点扫描耗时: {stepTimer.Elapsed.TotalSeconds:F2} 秒");
-            }
+
+            resumable = true;
+            resumeOffset = scan.Offset;
+            OnEvent?.Invoke($"断点扫描耗时: {stepTimer.Elapsed.TotalSeconds:F2} 秒");
         }
         else
         {
@@ -784,10 +730,10 @@ public sealed class Transfer : IDisposable
                  * 从前一个32 KiB边界重写少量已匹配数据，使W25Q驱动可以优先
                  * 使用Block Erase，避免从非对齐地址连续执行大量4 KiB擦除。
                  */
-                uint eraseStart = resumeOffset & ~(RESUME_ERASE_ALIGNMENT - 1u);
+                uint eraseStart = resumeOffset & ~(ResumeEraseAlignment - 1u);
                 uint writeStart = Math.Max(eraseStart, header.DataOffset);
-                uint eraseEnd = (dataEnd + RESUME_BLOCK_SIZE - 1u) &
-                                ~(uint)(RESUME_BLOCK_SIZE - 1);
+                uint eraseEnd = (dataEnd + ResumeBlockSize - 1u) &
+                                ~(uint)(ResumeBlockSize - 1);
                 uint preserved = writeStart - header.DataOffset;
 
                 OnEvent?.Invoke($"已复用 {preserved} 字节，从槽偏移0x{writeStart:X}继续");
@@ -808,7 +754,7 @@ public sealed class Transfer : IDisposable
 
             /* 扫描命令已把magic清零；真正提交Header前确保整个首扇区已擦除。 */
             if (!headerSectorErased &&
-                !await W25Erase(target, 0, RESUME_BLOCK_SIZE))
+                !await W25Erase(target, 0, ResumeBlockSize))
                 return false;
             if (!await W25Program(target, 0, xbin[..headerCommitSize], mtu,
                                   checked((int)header.DataLength), progressTotal))
@@ -830,22 +776,16 @@ public sealed class Transfer : IDisposable
     /// <summary>请求MCU立即复位。</summary>
     public async Task<bool> Reset()
     {
-        Response? response = await PacketRequest(OPCODE.RESET, null, TimeSpan.FromSeconds(DEFAULT_TIMEOUT_SECONDS));
-        if (response != null && response.Errcode == ERRCODE.OK)
-        {
-            return true;
-        }
-        return false;
+        Response? response = await PacketRequest(
+            Opcode.Reset, null, TimeSpan.FromSeconds(DefaultTimeoutSeconds));
+        return response?.ErrorCode == ErrorCode.Ok;
     }
 
     /// <summary>请求Bootloader通过统一A/B状态机准备并启动应用。</summary>
     public async Task<bool> Boot()
     {
-        Response? response = await PacketRequest(OPCODE.BOOT, null, TimeSpan.FromSeconds(DEFAULT_TIMEOUT_SECONDS));
-        if (response != null && response.Errcode == ERRCODE.OK)
-        {
-            return true;
-        }
-        return false;
+        Response? response = await PacketRequest(
+            Opcode.Boot, null, TimeSpan.FromSeconds(DefaultTimeoutSeconds));
+        return response?.ErrorCode == ErrorCode.Ok;
     }
 }

@@ -19,12 +19,12 @@ int main(void)
     assert(firmware_security_version_allowed(7u, 8u, false));
     assert(!firmware_security_version_allowed(7u, 6u, false));
 
-    /* KEY2只放行本次安装，不会让持久化安全下限倒退。 */
+    /* KEY2 只放行本次安装，不会让持久化安全下限倒退。 */
     assert(firmware_security_version_allowed(7u, 6u, true));
     assert(firmware_security_floor_after_confirm(7u, 6u) == 7u);
     assert(firmware_security_floor_after_confirm(7u, 8u) == 8u);
 
-    /* Trial失败没有确认动作，因此旧下限自然保持不变。 */
+    /* Trial 失败没有确认动作，因此旧下限自然保持不变。 */
     assert(firmware_security_floor_after_confirm(7u, 7u) == 7u);
 
     memcpy(other_sha, current_sha, sizeof(other_sha));

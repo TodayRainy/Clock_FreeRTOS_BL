@@ -111,8 +111,8 @@
 | 2 | 串口协议与 Bootloader 自研驱动 | 已完成 |
 | 3 | WeatherClock 应用、任务、健康确认、Wi-Fi 与 OTA | 已完成 |
 | 4 | WeatherClock 自研底层驱动 | 已完成 |
-| 5 | C# 上位机、Python 工具和项目说明 | 进行中 |
-| 6 | 完整主机/实板回归、发布与合并 | 未开始 |
+| 5 | C# 上位机、Python 工具和项目说明 | 已完成 |
+| 6 | 完整主机/实板回归、发布与合并 | 进行中 |
 
 ## 6. 分阶段范围
 
@@ -237,6 +237,19 @@
 整理 C# 上位机和 Python 工具，使字段命名、协议术语和 Formal 文档一致；同步更新
 `CODE_GUIDE.md`，加入模块调用关系和适合面试讲解的设计取舍。
 
+完成情况：
+
+- 将 C# 串口帧、Formal Header、BCR、断点 CRC 和槽命令改为显式小端读写，统一
+  类型、枚举、事件和异步控制流，删除已经退出主线的旧 Bootloader 回退分支；
+- 串口接收只把 `SerialPort.Read()` 实际返回的字节数写入 Channel；协议解析和 CRC
+  使用 Span，避免逐阶段重复复制完整帧；UI 在升级期间禁用按钮并集中处理日志；
+- 统一 Python 工具说明和生成头文件 Include Guard，重写旧字体转换脚本的入口和
+  数据流；补齐主机天气解析测试的文件说明；
+- 更新 README 当前空间占用与发布冲突提示，并在 `CODE_GUIDE.md` 增加三条主要调用
+  链和七项适合面试讲解的设计取舍；
+- terra medium 只读审阅未发现 P0～P3；GCC、全部主机测试、Python 语法检查和
+  .NET Release 零警告构建通过；固件长度与阶段 4 一致。
+
 ### 阶段 6：完整验收
 
 - GCC Release 构建；
@@ -262,6 +275,7 @@
 | 2 | 串口协议和 Bootloader 自研驱动 | GCC、完整安全测试、terra 审阅通过 | BL +96 B；App 0 B且哈希不变 | 阶段 6 统一验证 | `refactor(boot): unify protocol and driver style` |
 | 3 | WeatherClock任务、Wi-Fi、OTA、UI和页面 | GCC、天气解析、完整安全测试、terra 审阅通过 | App +172 B；BL不变 | 阶段 6 统一验证 | `refactor(app): clarify tasks networking and UI flow` |
 | 4 | WeatherClock自研底层驱动 | GCC、天气解析、完整安全测试、terra 审阅通过 | App -516 B；BL不变 | 阶段 6 统一验证 | `refactor(drivers): clarify hardware and DMA flows` |
+| 5 | C#上位机、Python工具和代码导读 | GCC、完整主机测试、Python语法、.NET、terra审阅通过 | 固件长度不变 | 阶段 6 统一验证 | `refactor(tools): align updater and project documentation` |
 
 ## 8. 待讨论问题
 

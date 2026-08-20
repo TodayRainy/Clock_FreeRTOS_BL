@@ -25,9 +25,13 @@ Formal 是产品线名称，不使用“v4”作为格式名称。Header 中仍�
 | security version | 2 |
 | 签名 Key ID | `0xCA9EEE70` |
 | AES Key ID | `0x9B5260DC` |
-| Bootloader Flash | 34,800 / 49,152 字节，70.80% |
-| WeatherClock Flash | 158,024 / 458,752 字节，34.45% |
+| Bootloader Flash | 34,896 / 49,152 字节，71.00% |
+| WeatherClock Flash | 157,680 / 458,752 字节，34.37% |
 | 公网 Manifest | `https://weather-clock-ota-1331831322.cos.ap-beijing.myqcloud.com/clock-f407/manifest.json` |
+
+上表 Flash 占用来自当前重构候选代码；公网 Manifest 仍指向已验证的
+`formal-1.0.0` 发布包。候选 WeatherClock 的二进制已经变化，在分配更大的
+`release_sequence` 前不得覆盖 COS 上的 release 4。
 
 2026-08-20 的实板最终状态为 `Normal / active=B / pending=none / seq=320`，
 内部应用与 A/B 两槽均通过 Formal Header、ECDSA、AES-GCM、CRC32、SHA-256 和
@@ -47,6 +51,8 @@ Formal 是产品线名称，不使用“v4”作为格式名称。Header 中仍�
 核心说明：
 
 - [CODE_GUIDE.md](CODE_GUIDE.md)：代码边界和完整运行流程；
+- [CODING_STYLE.md](CODING_STYLE.md)：自研代码的命名、注释、硬件和 RTOS 规则；
+- [REFACTOR_PLAN.md](REFACTOR_PLAN.md)：本轮分阶段重构与验证记录；
 - [ENCRYPTED_FIRMWARE_GUIDE.md](ENCRYPTED_FIRMWARE_GUIDE.md)：Formal 签名与加密设计；
 - [OTA_GUIDE.md](OTA_GUIDE.md)：COS OTA 下载、提交和发布顺序；
 - [RESUMABLE_UPGRADE_GUIDE.md](RESUMABLE_UPGRADE_GUIDE.md)：USART3 断点续传；

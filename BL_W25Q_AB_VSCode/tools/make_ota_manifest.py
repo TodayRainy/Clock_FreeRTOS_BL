@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Create the COS manifest for one XBIN Formal package."""
 
+from __future__ import annotations
+
 import argparse
 import hashlib
 import json
@@ -17,6 +19,7 @@ HEADER_AREA_SIZE = 4096
 
 
 def read_c_string(data: bytes) -> str:
+    """Decode one NUL-terminated ASCII field from the Formal Header."""
     return data.split(b"\0", 1)[0].decode("ascii")
 
 
@@ -52,7 +55,8 @@ def main() -> None:
     except ValueError as error:
         parser.error(str(error))
 
-    if magic != FORMAL_MAGIC or revision != FORMAL_REVISION or header_size != HEADER_SIZE:
+    if (magic != FORMAL_MAGIC or revision != FORMAL_REVISION or
+            header_size != HEADER_SIZE):
         parser.error("not an XBIN Formal revision 1 image")
     if (data_type != 1 or data_offset != HEADER_AREA_SIZE or
             data_address != 0x08010000 or data_length != len(payload)):
